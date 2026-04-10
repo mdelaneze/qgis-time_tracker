@@ -1,0 +1,19 @@
+[general]
+name=Time Tracker
+qgisMinimumVersion=3.16
+qgisMaximumVersion=3.99
+description=Track and persist time spent on each QGIS project independently.
+version=0.1.0
+author=Marcelo Delaneze
+email=mdelaneze@gmail.com
+about=Project-based time tracker. Auto-saves every 5 s, survives crashes,
+    detects idle, supports auto-pause on focus loss, and exports history to CSV/JSON.
+tracker=
+repository=
+tags=time,tracker,project,productivity
+homepage=
+category=Plugins
+icon=resources/clock.svg
+experimental=True
+deprecated=False
+hasProcessingProvider=no
