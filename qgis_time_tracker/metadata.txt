@@ -9,7 +9,7 @@ email=mdelaneze@gmail.com
 about=Project-based time tracker. Auto-saves every 5 s, survives crashes,
     detects idle, supports auto-pause on focus loss, and exports history to CSV/JSON.
 tracker=
-repository=
+repository=https://github.com/mdelaneze/qgis-time_tracker
 tags=time,tracker,project,productivity
 homepage=
 category=Plugins

@@ -5,23 +5,28 @@ and crash-safely.
 
 
 
+
+
+
+
+
 ## Status
 
 This plugin is in an early stage of development.
 
 Core features (time tracking, persistence, crash recovery) are implemented and functional,  
-but additional features and edge-case handling are still being refined.
+but additional features and edge-case handling are still being refined. 
 
 Feedback and bug reports are welcome.
----
+
 
 ## Installation
 
 ### Option A – QGIS Plugin Manager (recommended)
-
-1. In QGIS go to **Plugins → Manage and Install Plugins → Install from ZIP**.
-2. Select `qgis_time_tracker.zip`.
-3. Click **Install Plugin**.
+1. Zip qgis_time_tracker folder
+2. In QGIS go to **Plugins → Manage and Install Plugins → Install from ZIP**.
+3. Select `qgis_time_tracker.zip`.
+4. Click **Install Plugin**.
 
 ### Option B – Manual
 
@@ -42,22 +47,12 @@ Feedback and bug reports are welcome.
 
 After enabling the plugin a **Time Tracker** toolbar appears:
 
-```
-[ 00:00:00 ] [ ▶ ] [ ⏸ ] [ ⏹ ] [ 📊 ] [ ⚙ ]
-```
 
-| Button | Action |
-|--------|--------|
-| ▶      | Start or resume tracking for the current project |
-| ⏸      | Pause – time stops but is not lost |
-| ⏹      | Stop – saves the session and resets the running counter |
-| 📊     | Open the Statistics / Export dialog |
-| ⚙      | Open Settings |
 
-The timer label changes colour:
-- **Grey** → stopped
-- **Green** → running
-- **Amber** → paused
+<p align="center">
+  <img src="assets/plugin_gui.png" width="45%" />
+</p>
+
 
 ---
 
@@ -71,9 +66,16 @@ The timer label changes colour:
 
 ---
 
+<p align="center">
+  <img src="assets/plugin_settings.png" width="45%" />
+</p>
+
 ## Statistics & Export
 
 Click 📊 to open the **Statistics** dialog.
+
+
+
 
 **Projects tab** – total accumulated time per project, last accessed date.  
 **Sessions tab** – individual work sessions with start/end time and duration.
@@ -99,29 +101,6 @@ The database is opened in **WAL mode** (Write-Ahead Logging), which means:
 
 ---
 
-## Architecture
-
-```
-qgis_time_tracker/
-├── __init__.py                 # classFactory – QGIS entry point
-├── metadata.txt
-├── time_tracker_plugin.py      # Plugin lifecycle (initGui / unload)
-│                               # Event filters for idle + focus detection
-│                               # QgsProject signal connections
-├── core/
-│   ├── settings.py             # QSettings wrapper (idle timeout, auto-pause, …)
-│   ├── persistence.py          # SQLite: projects, sessions, active_session tables
-│   │                           # Crash recovery on startup
-│   └── tracker.py              # 3-state machine (STOPPED ↔ RUNNING ↔ PAUSED)
-│                               # display timer (1 s) + heartbeat timer (5 s)
-│                               # idle detection via time.monotonic()
-├── ui/
-│   ├── toolbar_widget.py       # Compact toolbar strip with colour-coded timer
-│   ├── settings_dialog.py      # QDialog for user preferences
-│   └── stats_dialog.py         # QDialog: Projects + Sessions tabs + export
-└── resources/
-    └── clock.svg               # Plugin icon
-```
 
 ### Key design decisions
 

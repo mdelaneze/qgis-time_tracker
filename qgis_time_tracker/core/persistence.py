@@ -96,6 +96,10 @@ class PersistenceManager:
     # ── crash recovery ─────────────────────────────────────────────────────────
 
     def _recover_crashed_session(self):
+        """
+        Check if an active session exists (leftover from a crash); if so, 
+        compute recovered time and update the database accordingly.
+        """
         row = self._conn.execute(
             "SELECT * FROM active_session WHERE id=1"
         ).fetchone()
@@ -131,6 +135,7 @@ class PersistenceManager:
     # ── internal helpers ───────────────────────────────────────────────────────
 
     def _ensure_project(self, project_path: str, project_name: str = None):
+        """Ensure a project is in the database."""
         if not project_name:
             if project_path == "__unsaved__":
                 project_name = "Unsaved Project"
@@ -153,6 +158,7 @@ class PersistenceManager:
         self._conn.commit()
 
     def _project_id(self, project_path: str):
+        """Get the project ID for a given path."""
         row = self._conn.execute(
             "SELECT id FROM projects WHERE project_path=?", (project_path,)
         ).fetchone()
