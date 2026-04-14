@@ -65,12 +65,12 @@ class PersistenceManager:
     def _init_schema(self):
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS projects (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_path TEXT    UNIQUE NOT NULL,
-                project_name TEXT    NOT NULL DEFAULT '',
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_path  TEXT    UNIQUE NOT NULL,
+                project_name  TEXT    NOT NULL DEFAULT '',
                 total_seconds INTEGER NOT NULL DEFAULT 0,
-                created_at   TEXT    NOT NULL,
-                last_accessed TEXT   NOT NULL
+                created_at    TEXT    NOT NULL,
+                last_accessed TEXT    NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS sessions (
@@ -84,12 +84,22 @@ class PersistenceManager:
             );
 
             CREATE TABLE IF NOT EXISTS active_session (
-                id           INTEGER PRIMARY KEY CHECK (id = 1),
-                project_path TEXT    NOT NULL,
-                start_time   TEXT    NOT NULL,
-                last_heartbeat TEXT  NOT NULL,
-                base_seconds INTEGER NOT NULL DEFAULT 0
+                id             INTEGER PRIMARY KEY CHECK (id = 1),
+                project_path   TEXT    NOT NULL,
+                start_time     TEXT    NOT NULL,
+                last_heartbeat TEXT    NOT NULL,
+                base_seconds   INTEGER NOT NULL DEFAULT 0
             );
+
+            -- Indexes for query performance
+            CREATE INDEX IF NOT EXISTS idx_projects_path
+                ON projects(project_path);
+
+            CREATE INDEX IF NOT EXISTS idx_sessions_project
+                ON sessions(project_id);
+
+            CREATE INDEX IF NOT EXISTS idx_sessions_start
+                ON sessions(start_time);
         """)
         self._conn.commit()
 
@@ -97,7 +107,7 @@ class PersistenceManager:
 
     def _recover_crashed_session(self):
         """
-        Check if an active session exists (leftover from a crash); if so, 
+        Check if an active session exists (leftover from a crash); if so,
         compute recovered time and update the database accordingly.
         """
         row = self._conn.execute(
@@ -135,7 +145,7 @@ class PersistenceManager:
     # ── internal helpers ───────────────────────────────────────────────────────
 
     def _ensure_project(self, project_path: str, project_name: str = None):
-        """Ensure a project is in the database."""
+        """Ensure a project row exists; update name on every call."""
         if not project_name:
             if project_path == "__unsaved__":
                 project_name = "Unsaved Project"
@@ -158,13 +168,13 @@ class PersistenceManager:
         self._conn.commit()
 
     def _project_id(self, project_path: str):
-        """Get the project ID for a given path."""
+        """Return the integer PK for a project path, or None."""
         row = self._conn.execute(
             "SELECT id FROM projects WHERE project_path=?", (project_path,)
         ).fetchone()
         return row["id"] if row else None
 
-    # ── public API ─────────────────────────────────────────────────────────────
+    # ── public API – reads ─────────────────────────────────────────────────────
 
     def get_project_seconds(self, project_path: str) -> int:
         row = self._conn.execute(
@@ -172,6 +182,42 @@ class PersistenceManager:
             (project_path,),
         ).fetchone()
         return int(row["total_seconds"]) if row else 0
+
+    def get_all_projects(self):
+        """
+        Returns all projects ordered by last_accessed DESC.
+        Each row includes a computed 'session_count' column.
+        """
+        return self._conn.execute(
+            "SELECT p.project_path, p.project_name, p.total_seconds, "
+            "p.last_accessed, COUNT(s.id) AS session_count "
+            "FROM projects p "
+            "LEFT JOIN sessions s ON s.project_id = p.id "
+            "GROUP BY p.id "
+            "ORDER BY p.last_accessed DESC"
+        ).fetchall()
+
+    def get_sessions(self, project_path: str = None):
+        """
+        Returns sessions joined with project info.
+        's.id' is included so callers can reference specific rows for deletion.
+        """
+        if project_path:
+            return self._conn.execute(
+                "SELECT s.id, s.start_time, s.end_time, s.duration_seconds, "
+                "s.recovered, p.project_path, p.project_name "
+                "FROM sessions s JOIN projects p ON s.project_id=p.id "
+                "WHERE p.project_path=? ORDER BY s.start_time DESC",
+                (project_path,),
+            ).fetchall()
+        return self._conn.execute(
+            "SELECT s.id, s.start_time, s.end_time, s.duration_seconds, "
+            "s.recovered, p.project_path, p.project_name "
+            "FROM sessions s JOIN projects p ON s.project_id=p.id "
+            "ORDER BY s.start_time DESC"
+        ).fetchall()
+
+    # ── public API – writes ────────────────────────────────────────────────────
 
     def update_project_seconds(
         self, project_path: str, total_seconds: int, project_name: str = None
@@ -185,23 +231,66 @@ class PersistenceManager:
         self._conn.commit()
 
     def reset_project_seconds(self, project_path: str):
+        """Zero the accumulated time for a project (keeps the project row and all sessions)."""
         self._conn.execute(
             "UPDATE projects SET total_seconds=0 WHERE project_path=?",
             (project_path,),
         )
         self._conn.commit()
 
+    def delete_project(self, project_path: str):
+        """
+        Permanently remove a project row and ALL its sessions.
+        The ON DELETE CASCADE constraint handles the sessions cleanup.
+        """
+        self._conn.execute(
+            "DELETE FROM projects WHERE project_path=?", (project_path,)
+        )
+        self._conn.commit()
+
+    def delete_session(self, session_id: int):
+        """
+        Remove a single session row and recalculate the owning project's
+        total_seconds as the SUM of all remaining sessions for that project.
+        """
+        row = self._conn.execute(
+            "SELECT project_id FROM sessions WHERE id=?", (session_id,)
+        ).fetchone()
+        if not row:
+            return
+
+        project_id = row["project_id"]
+        self._conn.execute("DELETE FROM sessions WHERE id=?", (session_id,))
+
+        result = self._conn.execute(
+            "SELECT COALESCE(SUM(duration_seconds), 0) AS total "
+            "FROM sessions WHERE project_id=?",
+            (project_id,),
+        ).fetchone()
+        self._conn.execute(
+            "UPDATE projects SET total_seconds=? WHERE id=?",
+            (int(result["total"]), project_id),
+        )
+        self._conn.commit()
+
     def migrate_project_path(self, old_path: str, new_path: str, new_name: str = None):
-        """Transfer accumulated time when an unsaved project is saved to disk."""
-        old_secs = self.get_project_seconds(old_path)
+        """
+        Transfer accumulated time when an unsaved project is saved to disk.
+        Merges old_path seconds into new_path and re-parents all sessions.
+        No-op if old_path == new_path.
+        """
+        if old_path == new_path:
+            return
+
+        old_secs     = self.get_project_seconds(old_path)
         existing_secs = self.get_project_seconds(new_path)
         merged = old_secs + existing_secs
+
         self._ensure_project(new_path, new_name)
         self._conn.execute(
             "UPDATE projects SET total_seconds=? WHERE project_path=?",
             (merged, new_path),
         )
-        # Sessions: re-parent sessions from old project to new project
         old_id = self._project_id(old_path)
         new_id = self._project_id(new_path)
         if old_id and new_id:
@@ -209,7 +298,7 @@ class PersistenceManager:
                 "UPDATE sessions SET project_id=? WHERE project_id=?",
                 (new_id, old_id),
             )
-        # Zero out the __unsaved__ entry (don't delete — keep the row for clarity)
+        # Zero out the old entry (keep the row for auditability)
         self._conn.execute(
             "UPDATE projects SET total_seconds=0 WHERE project_path=?",
             (old_path,),
@@ -227,7 +316,18 @@ class PersistenceManager:
             (project_path, now, now, base_seconds),
         )
         self._conn.commit()
-        return now  # caller stores this as session_start_iso
+        return now
+
+    def update_active_session_path(self, new_path: str):
+        """
+        Re-point the crash-guard sentinel at a new project path.
+        Called by tracker.on_project_saved() when an unsaved project is first saved.
+        """
+        self._conn.execute(
+            "UPDATE active_session SET project_path=? WHERE id=1",
+            (new_path,),
+        )
+        self._conn.commit()
 
     def update_heartbeat(self):
         self._conn.execute(
@@ -255,46 +355,23 @@ class PersistenceManager:
         self._conn.execute("DELETE FROM active_session")
         self._conn.commit()
 
-    # ── query API ──────────────────────────────────────────────────────────────
-
-    def get_all_projects(self):
-        return self._conn.execute(
-            "SELECT project_path, project_name, total_seconds, last_accessed "
-            "FROM projects ORDER BY last_accessed DESC"
-        ).fetchall()
-
-    def get_sessions(self, project_path: str = None):
-        if project_path:
-            return self._conn.execute(
-                "SELECT s.start_time, s.end_time, s.duration_seconds, "
-                "s.recovered, p.project_path, p.project_name "
-                "FROM sessions s JOIN projects p ON s.project_id=p.id "
-                "WHERE p.project_path=? ORDER BY s.start_time DESC",
-                (project_path,),
-            ).fetchall()
-        return self._conn.execute(
-            "SELECT s.start_time, s.end_time, s.duration_seconds, "
-            "s.recovered, p.project_path, p.project_name "
-            "FROM sessions s JOIN projects p ON s.project_id=p.id "
-            "ORDER BY s.start_time DESC"
-        ).fetchall()
-
     # ── export ─────────────────────────────────────────────────────────────────
 
     def export_csv(self, path: str):
         projects = self.get_all_projects()
         with open(path, "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
-            w.writerow(
-                ["project_name", "project_path", "total_seconds",
-                 "total_time_hms", "last_accessed"]
-            )
+            w.writerow([
+                "project_name", "project_path", "total_seconds",
+                "total_time_hms", "session_count", "last_accessed",
+            ])
             for p in projects:
                 w.writerow([
                     p["project_name"],
                     p["project_path"],
                     p["total_seconds"],
                     _fmt(p["total_seconds"]),
+                    p["session_count"],
                     p["last_accessed"],
                 ])
 
@@ -304,17 +381,18 @@ class PersistenceManager:
         for p in projects:
             sessions = self.get_sessions(p["project_path"])
             out.append({
-                "project_name": p["project_name"],
-                "project_path": p["project_path"],
+                "project_name":  p["project_name"],
+                "project_path":  p["project_path"],
                 "total_seconds": p["total_seconds"],
                 "total_time_hms": _fmt(p["total_seconds"]),
+                "session_count": p["session_count"],
                 "last_accessed": p["last_accessed"],
                 "sessions": [
                     {
-                        "start_time": s["start_time"],
-                        "end_time": s["end_time"],
+                        "start_time":       s["start_time"],
+                        "end_time":         s["end_time"],
                         "duration_seconds": s["duration_seconds"],
-                        "recovered": bool(s["recovered"]),
+                        "recovered":        bool(s["recovered"]),
                     }
                     for s in sessions
                 ],

@@ -4,12 +4,6 @@ Track how long you spend on each QGIS project — automatically, persistently,
 and crash-safely.
 
 
-
-
-
-
-
-
 ## Status
 
 This plugin is in an early stage of development.

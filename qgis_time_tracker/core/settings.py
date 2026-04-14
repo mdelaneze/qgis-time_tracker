@@ -9,8 +9,10 @@ _PREFIX = "TimeTrackerPlugin"
 
 _DEFAULTS = {
     "idle_timeout_minutes": 10,
-    "pause_on_focus_loss": False,
-    "auto_start_on_open": False,
+    "pause_on_focus_loss":  False,
+    "auto_start_on_open":   False,
+    "confirm_on_reset":     True,
+    "show_project_name":    True,
 }
 
 
@@ -19,11 +21,11 @@ def _qs():
     return QSettings()
 
 
-def _key(name):
+def _key(name: str) -> str:
     return f"{_PREFIX}/{name}"
 
 
-def _get(name):
+def _get(name: str):
     default = _DEFAULTS.get(name)
     v = _qs().value(_key(name), default)
     if isinstance(default, bool):
@@ -35,7 +37,7 @@ def _get(name):
     return v
 
 
-def _set(name, value):
+def _set(name: str, value):
     s = _qs()
     s.setValue(_key(name), value)
     s.sync()
@@ -49,25 +51,43 @@ class TrackerSettings:
     """
 
     @property
-    def idle_timeout_minutes(self):
+    def idle_timeout_minutes(self) -> int:
         return _get("idle_timeout_minutes")
 
     @idle_timeout_minutes.setter
-    def idle_timeout_minutes(self, v):
+    def idle_timeout_minutes(self, v: int):
         _set("idle_timeout_minutes", int(v))
 
     @property
-    def pause_on_focus_loss(self):
+    def pause_on_focus_loss(self) -> bool:
         return _get("pause_on_focus_loss")
 
     @pause_on_focus_loss.setter
-    def pause_on_focus_loss(self, v):
+    def pause_on_focus_loss(self, v: bool):
         _set("pause_on_focus_loss", bool(v))
 
     @property
-    def auto_start_on_open(self):
+    def auto_start_on_open(self) -> bool:
         return _get("auto_start_on_open")
 
     @auto_start_on_open.setter
-    def auto_start_on_open(self, v):
+    def auto_start_on_open(self, v: bool):
         _set("auto_start_on_open", bool(v))
+
+    @property
+    def confirm_on_reset(self) -> bool:
+        """Show confirmation dialog before resetting a project's time counter."""
+        return _get("confirm_on_reset")
+
+    @confirm_on_reset.setter
+    def confirm_on_reset(self, v: bool):
+        _set("confirm_on_reset", bool(v))
+
+    @property
+    def show_project_name(self) -> bool:
+        """Show the active project name label in the toolbar widget."""
+        return _get("show_project_name")
+
+    @show_project_name.setter
+    def show_project_name(self, v: bool):
+        _set("show_project_name", bool(v))
