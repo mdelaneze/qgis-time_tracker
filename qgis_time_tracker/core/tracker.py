@@ -30,7 +30,7 @@ class TrackerState(Enum):
     PAUSED  = "paused"
 
 
-# ── module-level helpers (read current QGIS project info) ─────────────────────
+# ── module-level helpers ───────────────────────────────────────────────────────
 
 def _current_project_key() -> str:
     path = QgsProject.instance().absoluteFilePath()
@@ -53,17 +53,22 @@ class TimeTracker(QObject):
     """
     Signals
     -------
-    time_updated(int)    – emitted every second while RUNNING; value is the
-                           current total accumulated seconds for the active project.
-    state_changed(str)   – emitted on every state transition; value is
-                           TrackerState.value ("stopped" | "running" | "paused").
-    project_changed(str) – emitted when a new project is loaded; value is the
-                           display name of the project (empty string if none).
+    time_updated(int)       – emitted every second while RUNNING; value is the
+                              current total accumulated seconds for the active project.
+    state_changed(str)      – emitted on every state transition.
+    project_changed(str)    – emitted when a new project is loaded.
+    settings_changed()      – emitted after SettingsDialog saves new settings so
+                              toolbar UI can refresh (e.g. show/hide project label).
+    session_completed(int)  – emitted at the end of every tracked session with
+                              the session duration in seconds. Useful for
+                              notifications and per-session stats.
     """
 
-    time_updated    = pyqtSignal(int)
-    state_changed   = pyqtSignal(str)
-    project_changed = pyqtSignal(str)
+    time_updated      = pyqtSignal(int)
+    state_changed     = pyqtSignal(str)
+    project_changed   = pyqtSignal(str)
+    settings_changed  = pyqtSignal()
+    session_completed = pyqtSignal(int)   # NEW: duration in seconds
 
     # ── construction ──────────────────────────────────────────────────────────
 
@@ -73,24 +78,21 @@ class TimeTracker(QObject):
         self._cfg = settings
 
         self._state             = TrackerState.STOPPED
-        self._base_seconds      = 0          # seconds accumulated in previous sessions
-        self._session_start_ts  = None       # time.monotonic() at session start
-        self._session_start_iso = None       # UTC ISO str returned by DB (for session log)
+        self._base_seconds      = 0
+        self._session_start_ts  = None
+        self._session_start_iso = None
         self._project_key       = None
         self._project_name      = None
-        self._warned_no_project = False      # throttles the "save project first" warning
+        self._warned_no_project = False
 
-        # 1-second display refresh
         self._display_timer = QTimer(self)
         self._display_timer.setInterval(1000)
         self._display_timer.timeout.connect(self._tick)
 
-        # 5-second crash-guard heartbeat
         self._heartbeat_timer = QTimer(self)
         self._heartbeat_timer.setInterval(5000)
         self._heartbeat_timer.timeout.connect(self._heartbeat)
 
-        # Idle-detection poll (10 s intervals)
         self._idle_timer = QTimer(self)
         self._idle_timer.setInterval(10_000)
         self._idle_timer.timeout.connect(self._check_idle)
@@ -109,7 +111,6 @@ class TimeTracker(QObject):
 
     @property
     def project_name(self) -> str:
-        """Display name of the currently loaded project (empty string if none)."""
         return self._project_name or ""
 
     # ── public API ────────────────────────────────────────────────────────────
@@ -118,12 +119,10 @@ class TimeTracker(QObject):
         """
         Called when QGIS opens a project or the plugin initialises.
         Saves and stops the current session (if any), then loads the new
-        project's accumulated time.
+        project\'s accumulated time.
         """
         key = _current_project_key()
         if key == self._project_key:
-            # Same file path – still refresh the display name in case the
-            # project title was edited without closing the project.
             new_name = _current_project_name()
             if new_name != self._project_name:
                 self._project_name = new_name
@@ -132,8 +131,6 @@ class TimeTracker(QObject):
 
         if self._state == TrackerState.RUNNING:
             self._commit_running()
-        # PAUSED: base_seconds is already committed; active_session was deleted
-        # by the earlier pause() call – nothing extra needed here.
         self._stop_timers()
 
         self._project_key  = key
@@ -153,13 +150,6 @@ class TimeTracker(QObject):
         """
         Call when QgsProject.fileNameChanged fires (i.e. the user saves a new
         project for the first time or uses "Save As").
-
-        Migrates accumulated time and open sessions from the old key (__unsaved__
-        or the previous path) to the new path; updates the crash-guard sentinel
-        if tracking is active.
-
-        Connect in plugin __init__.py:
-            QgsProject.instance().fileNameChanged.connect(self._tracker.on_project_saved)
         """
         if not new_path or new_path == self._project_key:
             return
@@ -172,8 +162,6 @@ class TimeTracker(QObject):
         self._project_key  = new_path
         self._project_name = new_name
 
-        # If running, redirect the crash-guard sentinel to the new path so that
-        # a crash after a Save-As is recovered under the correct project.
         if self._state == TrackerState.RUNNING:
             self._db.update_active_session_path(new_path)
 
@@ -181,23 +169,6 @@ class TimeTracker(QObject):
 
     def start(self):
         if self._state == TrackerState.RUNNING:
-            return
-
-        if not self._project_key or self._project_key == "__unsaved__":
-            if not self._warned_no_project:
-                try:
-                    iface.messageBar().pushWarning(
-                        "Time Tracker",
-                        "Salve ou abra um projeto para iniciar o rastreamento."
-                    )
-                except Exception:
-                    QMessageBox.warning(
-                        None,
-                        "Time Tracker",
-                        "É necessário salvar ou abrir um projeto QGIS antes de "
-                        "iniciar o rastreamento de tempo."
-                    )
-                self._warned_no_project = True
             return
 
         self._warned_no_project = False
@@ -227,17 +198,13 @@ class TimeTracker(QObject):
         self.time_updated.emit(self._base_seconds)
 
     def stop(self):
-        """
-        Stop tracking and register the session time.
-        Does NOT reset the accumulated counter (use reset() for that).
-        """
+        """Stop tracking. Does NOT reset the accumulated counter."""
         if self._state == TrackerState.STOPPED:
             return
 
         if self._state == TrackerState.RUNNING:
             self._commit_running()
         else:
-            # PAUSED: active_session was already deleted by pause() → just guard
             self._db.clear_active_session()
 
         self._state = TrackerState.STOPPED
@@ -246,8 +213,18 @@ class TimeTracker(QObject):
         self.state_changed.emit(self._state.value)
         self.time_updated.emit(self._base_seconds)
 
+    def toggle(self):
+        """
+        Start if STOPPED or PAUSED; pause if RUNNING.
+        Single-method convenience used by keyboard shortcuts and toolbar toggle.
+        """
+        if self._state == TrackerState.RUNNING:
+            self.pause()
+        else:
+            self.start()
+
     def reset(self):
-        """Stop tracking and zero out the current project's accumulated time."""
+        """Stop tracking and zero out the current project\'s accumulated time."""
         self.stop()
         if self._project_key:
             self._base_seconds = 0
@@ -257,12 +234,27 @@ class TimeTracker(QObject):
     def apply_idle_setting(self):
         """
         Apply the current idle_timeout_minutes value without restarting the
-        tracker.  Called by SettingsDialog after the user confirms new settings.
+        tracker. Called by SettingsDialog after the user confirms new settings.
         """
         if self._cfg.idle_timeout_minutes > 0 and self._state == TrackerState.RUNNING:
             self._idle_timer.start()
         else:
             self._idle_timer.stop()
+
+    def apply_project_name_setting(self):
+        """Notify toolbar to refresh show_project_name visibility."""
+        self.settings_changed.emit()
+
+    def sync_base_seconds(self):
+        """
+        Re-read base_seconds from DB for the current project and refresh
+        the toolbar display. Only effective when STOPPED.
+        Called by StatsDialog after external DB writes that change total_seconds.
+        """
+        if self._state != TrackerState.STOPPED or not self._project_key:
+            return
+        self._base_seconds = self._db.get_project_seconds(self._project_key)
+        self.time_updated.emit(self._base_seconds)
 
     def record_activity(self):
         """Called by the application-level event filter on mouse/key events."""
@@ -292,6 +284,12 @@ class TimeTracker(QObject):
         )
         self._session_start_ts  = None
         self._session_start_iso = None
+
+        # Notify listeners (e.g. toolbar notification, stats refresh)
+        # Only emits for sessions with meaningful duration (> cfg.min_session_seconds)
+        min_secs = getattr(self._cfg, "min_session_seconds", 0)
+        if elapsed > min_secs:
+            self.session_completed.emit(elapsed)
 
     def _stop_timers(self):
         self._display_timer.stop()

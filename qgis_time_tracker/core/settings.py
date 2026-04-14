@@ -8,11 +8,13 @@ when the object is recreated across plugin reloads.
 _PREFIX = "TimeTrackerPlugin"
 
 _DEFAULTS = {
-    "idle_timeout_minutes": 10,
-    "pause_on_focus_loss":  False,
-    "auto_start_on_open":   False,
-    "confirm_on_reset":     True,
-    "show_project_name":    True,
+    "idle_timeout_minutes":  10,
+    "pause_on_focus_loss":   False,
+    "auto_start_on_open":    False,
+    "confirm_on_reset":      True,
+    "show_project_name":     False,
+    "min_session_seconds":   0,      # sessões menores que isso são descartadas
+    "notify_on_session_end": False,  # notificação no messageBar ao encerrar sessão
 }
 
 
@@ -91,3 +93,21 @@ class TrackerSettings:
     @show_project_name.setter
     def show_project_name(self, v: bool):
         _set("show_project_name", bool(v))
+
+    @property
+    def min_session_seconds(self) -> int:
+        """Sessions shorter than this are discarded on pause/stop."""
+        return _get("min_session_seconds")
+
+    @min_session_seconds.setter
+    def min_session_seconds(self, v: int):
+        _set("min_session_seconds", int(v))
+
+    @property
+    def notify_on_session_end(self) -> bool:
+        """Show a messageBar notification when a session ends."""
+        return _get("notify_on_session_end")
+
+    @notify_on_session_end.setter
+    def notify_on_session_end(self, v: bool):
+        _set("notify_on_session_end", bool(v))
