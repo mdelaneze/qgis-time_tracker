@@ -1,129 +1,187 @@
 # QGIS Time Tracker Plugin
 
-Track how long you spend on each QGIS project — automatically, persistently,
-and crash-safely.
+Track time per QGIS project with automatic persistence, crash recovery, session history, and exports.
+
+The plugin adds a small toolbar to QGIS so you can start, pause, stop, inspect statistics, and configure tracking without leaving the main window.
+
+![Plugin toolbar](assets/plugin_gui.png)
+
+## What is implemented
+
+- Per-project time tracking with independent totals for each `.qgs` or `.qgz` project
+- Start, pause, resume, and stop controls in a dedicated toolbar
+- Automatic persistence in SQLite
+- Crash recovery based on heartbeat checkpoints
+- Tracking for unsaved projects, with migration to the real file path after the first save
+- Optional auto-start when a project is opened
+- Optional auto-pause after inactivity
+- Optional auto-pause when QGIS loses focus or is minimized
+- Session history with recovered-session flag
+- Summary statistics with KPIs, recent sessions, and activity heatmap
+- Project management actions: copy time, reset total, delete project record
+- Session management: delete individual sessions and recalculate totals
+- CSV and JSON export
+- Optional toolbar project name
+- Optional daily goal and toolbar progress bar
+- Keyboard shortcut: `Ctrl+Alt+T` to start/pause/resume
+
+## Compatibility
 
 
-## Status
+- The code includes Qt5/Qt6 compatibility paths and has been tested on both QGIS 3 and QGIS 4. However, compatibility has not yet been extensively validated across different environments and workflows.
 
-This plugin is in an early stage of development.
+## Privacy
 
-Core features (time tracking, persistence, crash recovery) are implemented and functional,  
-but additional features and edge-case handling are still being refined. 
+All tracked data is stored locally in the user's QGIS profile directory.
 
-Feedback and bug reports are welcome.
+The plugin does not transmit, collect, upload, or share any tracking information with external services.
 
+## Installation 
 
-## Installation
+### Install from ZIP
 
-### Option A – QGIS Plugin Manager (recommended)
-1. Zip qgis_time_tracker folder
-2. In QGIS go to **Plugins → Manage and Install Plugins → Install from ZIP**.
-3. Select `qgis_time_tracker.zip`.
-4. Click **Install Plugin**.
+1. Create a ZIP containing the `qgis_time_tracker/` folder.
+2. In QGIS, open `Plugins > Manage and Install Plugins > Install from ZIP`.
+3. Select the ZIP file.
+4. Install and enable the plugin.
 
-### Option B – Manual
+### Manual install
 
-1. Locate your QGIS plugins directory:
-   | OS      | Default path |
-   |---------|-------------|
-   | Linux   | `~/.local/share/QGIS/QGIS3/profiles/default/python/plugins/` |
-   | macOS   | `~/Library/Application Support/QGIS/QGIS3/profiles/default/python/plugins/` |
-   | Windows | `%APPDATA%\QGIS\QGIS3\profiles\default\python\plugins\` |
+Copy `qgis_time_tracker/` into your QGIS plugins directory:
 
-2. Copy the `qgis_time_tracker/` folder into that directory.
-3. Restart QGIS.
-4. Enable the plugin via **Plugins → Manage and Install Plugins → Installed**.
+| OS | Default path |
+|---|---|
+| Linux | `~/.local/share/QGIS/QGIS3/profiles/default/python/plugins/` |
+| macOS | `~/Library/Application Support/QGIS/QGIS3/profiles/default/python/plugins/` |
+| Windows | `%APPDATA%\QGIS\QGIS3\profiles\default\python\plugins\` |
 
----
+Then restart QGIS and enable the plugin in `Plugins > Manage and Install Plugins`.
 
-## Quick Start
+## Toolbar workflow
 
-After enabling the plugin a **Time Tracker** toolbar appears:
+The toolbar provides:
 
+- `▶` start or resume tracking
+- `⏸` pause tracking
+- `⏹` stop tracking
+- `📊` open statistics
+- `⚙` open settings
 
+The timer label supports a context menu to copy the current time and access quick start/pause/stop actions.
 
-<p align="center">
-  <img src="assets/plugin_gui.png" width="45%" />
-</p>
+If enabled in settings, the toolbar can also show:
 
-
----
+- the current project name
+- a daily progress bar under the timer
 
 ## Settings
 
-| Option | Description |
-|--------|-------------|
-| Idle timeout | Automatically pause after N minutes of no mouse/keyboard activity. Set to 0 to disable. |
-| Pause on focus loss | Pause when QGIS is minimised or loses focus (e.g., you switch to another application). |
-| Auto-start on open | Start tracking automatically every time a project is opened. |
+The settings dialog currently supports:
 
----
+- idle timeout in minutes, including disabled mode
+- pause on focus loss or minimize
+- auto-start when opening a project
+- minimum session duration setting
+- notification when a session ends
+- daily work goal in hours
+- show daily progress bar in toolbar
+- confirm-before-reset preference
+- show project name in toolbar
 
-<p align="center">
-  <img src="assets/plugin_settings.png" width="45%" />
-</p>
+![Settings dialog](assets/plugin_settings.png)
 
-## Statistics & Export
+## Statistics and data management
 
-Click 📊 to open the **Statistics** dialog.
+The statistics dialog has three tabs:
 
+### Summary
 
+- Today, This Week, All Time, Day Streak, and Projects KPIs
+- activity heatmap for the last 12 weeks
+- recent sessions list
 
+### Projects
 
-**Projects tab** – total accumulated time per project, last accessed date.  
-**Sessions tab** – individual work sessions with start/end time and duration.
-Sessions marked **✓** in the Recovered column were rescued from a crash.
+- filter by project name or path
+- inspect total time, session count, and last access
+- copy tracked time to the clipboard
+- reset a project's total time
+- delete a project's record and all of its sessions
 
-Use **Export CSV** or **Export JSON** to save a full report.
+### Session History
 
----
+- browse recorded sessions across projects
+- see recovered sessions flagged in the table
+- delete individual sessions
 
-## Data Storage
+The dialog also supports exporting tracked data to CSV or JSON.
 
-All data is stored in a SQLite database:
+## Data storage
 
-```
+All data is stored in a SQLite database under the QGIS profile directory:
+
+```text
 {QGIS profile dir}/time_tracker/time_tracker.db
 ```
 
-The database is opened in **WAL mode** (Write-Ahead Logging), which means:
-- SQLite never writes a partial page to the main DB file.
-- A hard kill or power loss cannot corrupt the database.
-- A heartbeat writes `active_session.last_heartbeat` every **5 seconds**, so
-  at most 5 s of tracking time is lost in a crash.
+The database schema includes:
 
----
+- `projects`: cumulative total per project
+- `sessions`: individual tracked sessions
+- `active_session`: the currently running session used for crash recovery
+- `daily_totals`: aggregated daily totals used by the summary views
+
+SQLite is opened with:
+
+- `WAL` journal mode
+- foreign keys enabled
+- `synchronous=NORMAL`
+
+## Crash recovery behavior
+
+- While tracking is running, the plugin updates a heartbeat every 5 seconds.
+- If QGIS crashes, the plugin recovers the last active session from the saved heartbeat on the next startup.
+- Recovered sessions are marked in session history and in the recent sessions summary.
+
+In practice, this means a crash should lose at most about 5 seconds of tracked time.
+
+## Unsaved projects
+
+Unsaved projects are tracked under an internal `__unsaved__` key.
+
+When the project is saved for the first time, the plugin migrates accumulated totals and session history to the real project path so the tracked data is preserved.
+
+## Export formats
+
+### CSV
+
+Exports one row per project with:
+
+- `project_name`
+- `project_path`
+- `total_seconds`
+- `total_time_hms`
+- `session_count`
+- `last_accessed`
+
+### JSON
+
+Exports the same project-level fields plus nested session history for each project:
+
+- `start_time`
+- `end_time`
+- `duration_seconds`
+- `recovered`
+
+## Current limitations
+
+- There are no automated tests in this repository yet.
+- Daily totals are keyed by the session start date, so sessions spanning midnight are not split across two calendar days.
+- The `Minimum session duration` setting is exposed in the UI, but the current implementation still persists short sessions instead of discarding them.
+- The `confirm before resetting` preference is exposed in settings, but reset actions currently still ask for confirmation.
 
 
-### Key design decisions
 
-**Why SQLite instead of JSON?**  
-SQLite is ACID-compliant: a crash mid-write leaves the DB in a consistent
-state because WAL mode keeps incomplete writes in the journal, never in the
-main file.  JSON has no such guarantee.
+## License
 
-**Why `time.monotonic()` for elapsed time?**  
-`time.time()` is affected by NTP adjustments and DST switches.
-`time.monotonic()` always moves forward and is ideal for measuring durations.
-The DB stores wall-clock ISO timestamps (UTC) for display purposes only —
-no duration arithmetic ever touches those values.
-
-**Why a single `active_session` row?**  
-There can only be one active tracker session at a time.  Using `id=1` as a
-constraint means `INSERT OR REPLACE` is an atomic upsert, eliminating the
-risk of duplicate rows even if the heartbeat and a stop() call race.
-
-**Why not update `projects.total_seconds` on every heartbeat?**  
-It would produce unnecessary write amplification.  The heartbeat only
-touches `active_session.last_heartbeat` (one small write).  The project
-total is updated once per session: on pause(), stop(), or load_project().
-Crash recovery reads `last_heartbeat` to reconstruct the lost interval.
-
-**Unsaved project tracking**  
-QGIS returns `""` for `absoluteFilePath()` before a project is saved.
-The plugin maps this to the sentinel key `__unsaved__`.  When the user
-saves the project for the first time (`writeProject` signal), the plugin
-calls `PersistenceManager.migrate_project_path()` which re-parents both
-the `projects` row and all `sessions` rows to the real file path — no data
-is lost.
+See [qgis_time_tracker/LICENSE](qgis_time_tracker/LICENSE).
