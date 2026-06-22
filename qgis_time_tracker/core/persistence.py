@@ -1,11 +1,18 @@
 """
-SQLite-backed persistence layer.
+SQLite-backed persistence layer — QGIS 4 / Qt 6 compatible.
 
-Schema (3 tables):
+Schema (4 tables):
   projects      – one row per .qgs/.qgz file; stores cumulative total_seconds.
   sessions      – one row per tracked work session; used for history & export.
   active_session– at most ONE row (id=1); written every heartbeat so that
                   QGIS crashes lose at most 5 s of tracking data.
+  daily_totals  – materialised daily aggregates for the heatmap/chart view.
+
+Schema migration
+----------------
+  _migrate() is called after _init_schema() and handles upgrades from older
+  versions of the plugin (Qt5/QGIS 3.x) transparently.  Each migration step
+  is wrapped in its own transaction so a partial failure cannot corrupt the DB.
 
 Crash-recovery logic runs in __init__ before any other operation:
   if active_session exists → compute recovered seconds from last_heartbeat,
@@ -20,35 +27,43 @@ import csv
 import json
 import os
 import sqlite3
-from datetime import datetime, timezone
-
+from datetime import date, datetime, timedelta, timezone
 
 # ── helpers ────────────────────────────────────────────────────────────────────
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _today() -> str:
+    return date.today().isoformat()
+
+
 def _fmt(secs: int) -> str:
-    h, rem = divmod(secs, 3600)
+    h, rem = divmod(int(secs), 3600)
     m, s = divmod(rem, 60)
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
 # ── main class ─────────────────────────────────────────────────────────────────
 
+
 class PersistenceManager:
+
+    # Current schema version — bump when adding new migrations.
+    _SCHEMA_VERSION = 2
 
     def __init__(self):
         from qgis.core import QgsApplication
-        data_dir = os.path.join(
-            QgsApplication.qgisSettingsDirPath(), "time_tracker"
-        )
+
+        data_dir = os.path.join(QgsApplication.qgisSettingsDirPath(), "time_tracker")
         os.makedirs(data_dir, exist_ok=True)
         self._db_path = os.path.join(data_dir, "time_tracker.db")
         self._conn: sqlite3.Connection = None
         self._open()
         self._init_schema()
+        self._migrate()
         self._recover_crashed_session()
 
     # ── connection ─────────────────────────────────────────────────────────────
@@ -63,7 +78,12 @@ class PersistenceManager:
     # ── schema ─────────────────────────────────────────────────────────────────
 
     def _init_schema(self):
-        self._conn.executescript("""
+        self._conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER NOT NULL DEFAULT 0
+            );
+
             CREATE TABLE IF NOT EXISTS projects (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 project_path  TEXT    UNIQUE NOT NULL,
@@ -91,28 +111,84 @@ class PersistenceManager:
                 base_seconds   INTEGER NOT NULL DEFAULT 0
             );
 
-            -- Indexes for query performance
+            CREATE TABLE IF NOT EXISTS daily_totals (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                work_date   TEXT    NOT NULL,
+                project_id  INTEGER NOT NULL,
+                day_seconds INTEGER NOT NULL DEFAULT 0,
+                UNIQUE (work_date, project_id),
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_projects_path
                 ON projects(project_path);
-
             CREATE INDEX IF NOT EXISTS idx_sessions_project
                 ON sessions(project_id);
-
             CREATE INDEX IF NOT EXISTS idx_sessions_start
                 ON sessions(start_time);
-        """)
+            CREATE INDEX IF NOT EXISTS idx_daily_date
+                ON daily_totals(work_date);
+        """
+        )
         self._conn.commit()
+
+        # Seed schema_version if table is empty
+        count = self._conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
+        if count == 0:
+            self._conn.execute("INSERT INTO schema_version (version) VALUES (0)")
+            self._conn.commit()
+
+    # ── migrations ─────────────────────────────────────────────────────────────
+
+    def _migrate(self):
+        """
+        Run all pending schema migrations in order.
+        Safe to call repeatedly; each step checks the current version first.
+        Preserves all existing data from Qt5/QGIS 3 installs.
+        """
+        current = self._conn.execute("SELECT version FROM schema_version").fetchone()[
+            "version"
+        ]
+
+        if current < 1:
+            # v1 – back-fill daily_totals from existing sessions table
+            try:
+                rows = self._conn.execute(
+                    "SELECT s.project_id, s.start_time, s.duration_seconds "
+                    "FROM sessions s WHERE s.duration_seconds > 0"
+                ).fetchall()
+                for row in rows:
+                    work_date = str(row["start_time"])[:10]
+                    self._conn.execute(
+                        "INSERT INTO daily_totals (work_date, project_id, day_seconds) "
+                        "VALUES (?,?,?) "
+                        "ON CONFLICT(work_date, project_id) DO UPDATE "
+                        "SET day_seconds = day_seconds + excluded.day_seconds",
+                        (work_date, row["project_id"], row["duration_seconds"]),
+                    )
+                self._conn.execute("UPDATE schema_version SET version=1")
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+
+            current = 1
+
+        if current < 2:
+            # v2 – ensure projects.created_at is never NULL (guard for old rows)
+            try:
+                self._conn.execute(
+                    "UPDATE projects SET created_at=last_accessed "
+                    "WHERE created_at IS NULL OR created_at=''"
+                )
+                self._conn.execute("UPDATE schema_version SET version=2")
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
 
     # ── crash recovery ─────────────────────────────────────────────────────────
 
     def _recover_crashed_session(self):
-        """
-        Check if an active session exists (leftover from a crash); if so,
-        compute recovered time and update the database accordingly.
-        """
-        row = self._conn.execute(
-            "SELECT * FROM active_session WHERE id=1"
-        ).fetchone()
+        row = self._conn.execute("SELECT * FROM active_session WHERE id=1").fetchone()
         if row is None:
             return
 
@@ -136,6 +212,14 @@ class PersistenceManager:
                     "VALUES (?,?,?,?,1)",
                     (pid, row["start_time"], row["last_heartbeat"], elapsed),
                 )
+                work_date = str(row["start_time"])[:10]
+                self._conn.execute(
+                    "INSERT INTO daily_totals (work_date, project_id, day_seconds) "
+                    "VALUES (?,?,?) "
+                    "ON CONFLICT(work_date, project_id) DO UPDATE "
+                    "SET day_seconds = day_seconds + excluded.day_seconds",
+                    (work_date, pid, elapsed),
+                )
         except Exception:
             pass
         finally:
@@ -145,14 +229,13 @@ class PersistenceManager:
     # ── internal helpers ───────────────────────────────────────────────────────
 
     def _ensure_project(self, project_path: str, project_name: str = None):
-        """Ensure a project row exists; update name on every call."""
         if not project_name:
             if project_path == "__unsaved__":
                 project_name = "Unsaved Project"
             else:
-                project_name = os.path.splitext(
-                    os.path.basename(project_path)
-                )[0] or project_path
+                project_name = (
+                    os.path.splitext(os.path.basename(project_path))[0] or project_path
+                )
 
         self._conn.execute(
             "INSERT OR IGNORE INTO projects "
@@ -168,7 +251,6 @@ class PersistenceManager:
         self._conn.commit()
 
     def _project_id(self, project_path: str):
-        """Return the integer PK for a project path, or None."""
         row = self._conn.execute(
             "SELECT id FROM projects WHERE project_path=?", (project_path,)
         ).fetchone()
@@ -184,13 +266,9 @@ class PersistenceManager:
         return int(row["total_seconds"]) if row else 0
 
     def get_all_projects(self):
-        """
-        Returns all projects ordered by last_accessed DESC.
-        Each row includes a computed 'session_count' column.
-        """
         return self._conn.execute(
             "SELECT p.project_path, p.project_name, p.total_seconds, "
-            "p.last_accessed, COUNT(s.id) AS session_count "
+            "p.last_accessed, p.created_at, COUNT(s.id) AS session_count "
             "FROM projects p "
             "LEFT JOIN sessions s ON s.project_id = p.id "
             "GROUP BY p.id "
@@ -198,10 +276,6 @@ class PersistenceManager:
         ).fetchall()
 
     def get_sessions(self, project_path: str = None):
-        """
-        Returns sessions joined with project info.
-        's.id' is included so callers can reference specific rows for deletion.
-        """
         if project_path:
             return self._conn.execute(
                 "SELECT s.id, s.start_time, s.end_time, s.duration_seconds, "
@@ -217,6 +291,64 @@ class PersistenceManager:
             "ORDER BY s.start_time DESC"
         ).fetchall()
 
+    def get_daily_totals(self, days: int = 365):
+        """
+        Returns daily aggregate seconds for the last `days` calendar days
+        across ALL projects.  Used by the heatmap / bar chart.
+        """
+        since = (date.today() - timedelta(days=days)).isoformat()
+        rows = self._conn.execute(
+            "SELECT work_date, SUM(day_seconds) AS total_seconds "
+            "FROM daily_totals "
+            "WHERE work_date >= ? "
+            "GROUP BY work_date "
+            "ORDER BY work_date ASC",
+            (since,),
+        ).fetchall()
+        return rows
+
+    def get_weekly_totals(self, weeks: int = 12):
+        """
+        Returns weekly totals (Mon–Sun) for the last `weeks` weeks.
+        Returns list of dicts: {week_start: str, total_seconds: int}.
+        """
+        rows = self.get_daily_totals(days=weeks * 7)
+        buckets: dict = {}
+        for row in rows:
+            d = date.fromisoformat(row["work_date"])
+            week_start = (d - timedelta(days=d.weekday())).isoformat()
+            buckets[week_start] = buckets.get(week_start, 0) + row["total_seconds"]
+        return [
+            {"week_start": k, "total_seconds": v} for k, v in sorted(buckets.items())
+        ]
+
+    def get_today_seconds(self) -> int:
+        row = self._conn.execute(
+            "SELECT COALESCE(SUM(day_seconds),0) AS total "
+            "FROM daily_totals WHERE work_date=?",
+            (_today(),),
+        ).fetchone()
+        return int(row["total"]) if row else 0
+
+    def get_streak_days(self) -> int:
+        """Number of consecutive days with recorded work ending today or yesterday."""
+        rows = self._conn.execute(
+            "SELECT DISTINCT work_date FROM daily_totals "
+            "WHERE day_seconds > 0 ORDER BY work_date DESC"
+        ).fetchall()
+        if not rows:
+            return 0
+        streak = 0
+        expected = date.today()
+        for row in rows:
+            d = date.fromisoformat(row["work_date"])
+            if d == expected or (streak == 0 and d == expected - timedelta(days=1)):
+                streak += 1
+                expected = d - timedelta(days=1)
+            else:
+                break
+        return streak
+
     # ── public API – writes ────────────────────────────────────────────────────
 
     def update_project_seconds(
@@ -230,8 +362,24 @@ class PersistenceManager:
         )
         self._conn.commit()
 
+    def record_daily_seconds(self, project_path: str, elapsed_seconds: int):
+        """Add elapsed_seconds to today's daily_totals bucket for project_path."""
+        if elapsed_seconds <= 0:
+            return
+        self._ensure_project(project_path)
+        pid = self._project_id(project_path)
+        if pid is None:
+            return
+        self._conn.execute(
+            "INSERT INTO daily_totals (work_date, project_id, day_seconds) "
+            "VALUES (?,?,?) "
+            "ON CONFLICT(work_date, project_id) DO UPDATE "
+            "SET day_seconds = day_seconds + excluded.day_seconds",
+            (_today(), pid, elapsed_seconds),
+        )
+        self._conn.commit()
+
     def reset_project_seconds(self, project_path: str):
-        """Zero the accumulated time for a project (keeps the project row and all sessions)."""
         self._conn.execute(
             "UPDATE projects SET total_seconds=0 WHERE project_path=?",
             (project_path,),
@@ -239,27 +387,22 @@ class PersistenceManager:
         self._conn.commit()
 
     def delete_project(self, project_path: str):
-        """
-        Permanently remove a project row and ALL its sessions.
-        The ON DELETE CASCADE constraint handles the sessions cleanup.
-        """
-        self._conn.execute(
-            "DELETE FROM projects WHERE project_path=?", (project_path,)
-        )
+        self._conn.execute("DELETE FROM projects WHERE project_path=?", (project_path,))
         self._conn.commit()
 
     def delete_session(self, session_id: int):
-        """
-        Remove a single session row and recalculate the owning project's
-        total_seconds as the SUM of all remaining sessions for that project.
-        """
         row = self._conn.execute(
-            "SELECT project_id FROM sessions WHERE id=?", (session_id,)
+            "SELECT project_id, duration_seconds, start_time "
+            "FROM sessions WHERE id=?",
+            (session_id,),
         ).fetchone()
         if not row:
             return
 
         project_id = row["project_id"]
+        dur = row["duration_seconds"]
+        work_date = str(row["start_time"])[:10]
+
         self._conn.execute("DELETE FROM sessions WHERE id=?", (session_id,))
 
         result = self._conn.execute(
@@ -271,18 +414,20 @@ class PersistenceManager:
             "UPDATE projects SET total_seconds=? WHERE id=?",
             (int(result["total"]), project_id),
         )
+
+        # Subtract from daily_totals (floor at 0)
+        self._conn.execute(
+            "UPDATE daily_totals SET day_seconds=MAX(0, day_seconds - ?) "
+            "WHERE work_date=? AND project_id=?",
+            (dur, work_date, project_id),
+        )
         self._conn.commit()
 
     def migrate_project_path(self, old_path: str, new_path: str, new_name: str = None):
-        """
-        Transfer accumulated time when an unsaved project is saved to disk.
-        Merges old_path seconds into new_path and re-parents all sessions.
-        No-op if old_path == new_path.
-        """
         if old_path == new_path:
             return
 
-        old_secs     = self.get_project_seconds(old_path)
+        old_secs = self.get_project_seconds(old_path)
         existing_secs = self.get_project_seconds(new_path)
         merged = old_secs + existing_secs
 
@@ -298,7 +443,10 @@ class PersistenceManager:
                 "UPDATE sessions SET project_id=? WHERE project_id=?",
                 (new_id, old_id),
             )
-        # Zero out the old entry (keep the row for auditability)
+            self._conn.execute(
+                "UPDATE daily_totals SET project_id=? WHERE project_id=?",
+                (new_id, old_id),
+            )
         self._conn.execute(
             "UPDATE projects SET total_seconds=0 WHERE project_path=?",
             (old_path,),
@@ -319,10 +467,6 @@ class PersistenceManager:
         return now
 
     def update_active_session_path(self, new_path: str):
-        """
-        Re-point the crash-guard sentinel at a new project path.
-        Called by tracker.on_project_saved() when an unsaved project is first saved.
-        """
         self._conn.execute(
             "UPDATE active_session SET project_path=? WHERE id=1",
             (new_path,),
@@ -348,6 +492,14 @@ class PersistenceManager:
                 "VALUES (?,?,?,?)",
                 (pid, start_time_iso, _now(), duration_seconds),
             )
+            work_date = str(start_time_iso)[:10]
+            self._conn.execute(
+                "INSERT INTO daily_totals (work_date, project_id, day_seconds) "
+                "VALUES (?,?,?) "
+                "ON CONFLICT(work_date, project_id) DO UPDATE "
+                "SET day_seconds = day_seconds + excluded.day_seconds",
+                (work_date, pid, duration_seconds),
+            )
         self._conn.execute("DELETE FROM active_session")
         self._conn.commit()
 
@@ -361,42 +513,52 @@ class PersistenceManager:
         projects = self.get_all_projects()
         with open(path, "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
-            w.writerow([
-                "project_name", "project_path", "total_seconds",
-                "total_time_hms", "session_count", "last_accessed",
-            ])
+            w.writerow(
+                [
+                    "project_name",
+                    "project_path",
+                    "total_seconds",
+                    "total_time_hms",
+                    "session_count",
+                    "last_accessed",
+                ]
+            )
             for p in projects:
-                w.writerow([
-                    p["project_name"],
-                    p["project_path"],
-                    p["total_seconds"],
-                    _fmt(p["total_seconds"]),
-                    p["session_count"],
-                    p["last_accessed"],
-                ])
+                w.writerow(
+                    [
+                        p["project_name"],
+                        p["project_path"],
+                        p["total_seconds"],
+                        _fmt(p["total_seconds"]),
+                        p["session_count"],
+                        p["last_accessed"],
+                    ]
+                )
 
     def export_json(self, path: str):
         projects = self.get_all_projects()
         out = []
         for p in projects:
             sessions = self.get_sessions(p["project_path"])
-            out.append({
-                "project_name":  p["project_name"],
-                "project_path":  p["project_path"],
-                "total_seconds": p["total_seconds"],
-                "total_time_hms": _fmt(p["total_seconds"]),
-                "session_count": p["session_count"],
-                "last_accessed": p["last_accessed"],
-                "sessions": [
-                    {
-                        "start_time":       s["start_time"],
-                        "end_time":         s["end_time"],
-                        "duration_seconds": s["duration_seconds"],
-                        "recovered":        bool(s["recovered"]),
-                    }
-                    for s in sessions
-                ],
-            })
+            out.append(
+                {
+                    "project_name": p["project_name"],
+                    "project_path": p["project_path"],
+                    "total_seconds": p["total_seconds"],
+                    "total_time_hms": _fmt(p["total_seconds"]),
+                    "session_count": p["session_count"],
+                    "last_accessed": p["last_accessed"],
+                    "sessions": [
+                        {
+                            "start_time": s["start_time"],
+                            "end_time": s["end_time"],
+                            "duration_seconds": s["duration_seconds"],
+                            "recovered": bool(s["recovered"]),
+                        }
+                        for s in sessions
+                    ],
+                }
+            )
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(out, fh, indent=2, ensure_ascii=False)
 

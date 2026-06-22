@@ -1,14 +1,6 @@
 """
-TrackerWidget – compact toolbar strip:
-  [nome_projeto] [00:00:00] [▶/⏸] [⏹] [📊] [⚙]
+TrackerWidget – compact toolbar strip.
 
-Timer label colour changes with state:
-  STOPPED  → grey
-  RUNNING  → green
-  PAUSED   → amber
-
-Project label is elided at 170 px and shows the full name in a tooltip.
-Font for the timer falls back gracefully when Consolas is not available.
 
 Keyboard shortcut
 -----------------
@@ -16,84 +8,154 @@ Keyboard shortcut
                 even when the toolbar widget does not have focus.
 """
 
+from qgis.PyQt.QtCore import QPoint, Qt
+from qgis.PyQt.QtGui import QFont, QFontDatabase, QFontMetrics, QKeySequence
 from qgis.PyQt.QtWidgets import (
-    QWidget, QHBoxLayout, QLabel, QPushButton, QApplication, QMenu,
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QProgressBar,
+    QPushButton,
+    QShortcut,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
 )
-from qgis.PyQt.QtCore import Qt, QPoint
-from qgis.PyQt.QtGui import QFont, QFontDatabase, QFontMetrics
-from qgis.PyQt.QtWidgets import QShortcut
-from qgis.PyQt.QtGui import QKeySequence
 from qgis.utils import iface
 
 from ..core.tracker import TrackerState
 from .settings_dialog import SettingsDialog
 from .stats_dialog import StatsDialog
 
+_PROJECT_LABEL_MAX_WIDTH = 100
+_WIDGET_MAX_WIDTH = 400  # 0 means no global width limit
 
-_PROJECT_LABEL_MAX_WIDTH = 170
+
+# ── Qt5 / Qt6 enum compat ──────────────────────────────────────────────────────
+
+
+def _qt(root, *chain, fallback=None):
+    obj = root
+    for attr in chain:
+        obj = getattr(obj, attr, None)
+        if obj is None:
+            return fallback
+    return obj if obj is not None else fallback
+
+
+def _align_center():
+    return _qt(Qt, "AlignmentFlag", "AlignCenter") or _qt(Qt, "AlignCenter")
+
+
+def _elide_right():
+    return _qt(Qt, "TextElideMode", "ElideRight") or _qt(Qt, "ElideRight")
+
+
+def _ctx_menu_policy():
+    return _qt(Qt, "ContextMenuPolicy", "CustomContextMenu") or _qt(
+        Qt, "CustomContextMenu"
+    )
+
+
+def _pointing_hand():
+    return _qt(Qt, "CursorShape", "PointingHandCursor") or _qt(Qt, "PointingHandCursor")
+
+
+def _app_shortcut():
+    return _qt(Qt, "ShortcutContext", "ApplicationShortcut") or _qt(
+        Qt, "ApplicationShortcut"
+    )
+
+
+# ── helpers ────────────────────────────────────────────────────────────────────
 
 
 def _fmt(secs: int) -> str:
     h, rem = divmod(int(secs), 3600)
-    m, s   = divmod(rem, 60)
+    m, s = divmod(rem, 60)
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
 def _monospace_font(size: int) -> QFont:
     preferred = ["Consolas", "Courier New", "DejaVu Sans Mono", "Monospace"]
-    available = QFontDatabase().families()
+    try:
+        available = QFontDatabase().families()
+    except TypeError:
+        # PyQt6 may require no-arg call differently
+        available = QFontDatabase.families()
     for name in preferred:
         if name in available:
             return QFont(name, size)
-    f = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+    try:
+        f = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+    except AttributeError:
+        f = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
     f.setPointSize(size)
     return f
 
 
-# ── per-state styles ───────────────────────────────────────────────────────────
+# ── per-state visual definitions ───────────────────────────────────────────────
 
 _STATE_STYLE = {
     TrackerState.STOPPED: (
-        "QLabel{color:#2b2b2b;background:#f5f5f5;border:1px solid #e0e0e0;"
-        "border-radius:6px;padding:4px 10px;font-weight:600;}"
+        "QLabel{"
+        "color:#4a4a4a;"
+        "background:#f0f0f0;"
+        "border:1px solid #d0d0d0;"
+        "border-radius:6px;"
+        "padding:3px 10px;"
+        "font-weight:600;"
+        "}"
     ),
     TrackerState.RUNNING: (
-        "QLabel{color:#0f5132;background:#d1f2eb;border:1px solid #a3e4d7;"
-        "border-radius:6px;padding:4px 10px;font-weight:700;}"
+        "QLabel{"
+        "color:#0a3d22;"
+        "background:#c8f2db;"
+        "border:1px solid #7dcfa5;"
+        "border-radius:6px;"
+        "padding:3px 10px;"
+        "font-weight:700;"
+        "}"
     ),
     TrackerState.PAUSED: (
-        "QLabel{color:#664d03;background:#fff3cd;border:1px solid #ffecb5;"
-        "border-radius:6px;padding:4px 10px;font-weight:700;}"
+        "QLabel{"
+        "color:#5a3c00;"
+        "background:#fff0c2;"
+        "border:1px solid #f0c840;"
+        "border-radius:6px;"
+        "padding:3px 10px;"
+        "font-weight:700;"
+        "}"
     ),
 }
 
-_PROJ_LABEL_STYLE = {
-    TrackerState.STOPPED: "QLabel{color:#777;font-size:11px;padding:2px 4px;}",
-    TrackerState.RUNNING: "QLabel{color:#0f5132;font-size:11px;font-weight:600;padding:2px 4px;}",
-    TrackerState.PAUSED:  "QLabel{color:#664d03;font-size:11px;font-weight:600;padding:2px 4px;}",
+_PROJ_STYLE = {
+    TrackerState.STOPPED: "QLabel{color:#888;font-size:11px;padding:1px 4px;}",
+    TrackerState.RUNNING: "QLabel{color:#0a3d22;font-size:11px;font-weight:600;padding:1px 4px;}",
+    TrackerState.PAUSED: "QLabel{color:#5a3c00;font-size:11px;font-weight:600;padding:1px 4px;}",
 }
 
-# Toggle button muda cor conforme estado
 _TOGGLE_STYLE = {
-    TrackerState.STOPPED: (   # verde – convida a iniciar
-        "QPushButton{background:#27ae60;color:#fff;border:none;border-radius:4px;"
-        "font-size:16px;padding:0px;}"
+    TrackerState.STOPPED: (
+        "QPushButton{background:#27ae60;color:#fff;border:none;border-radius:5px;"
+        "font-size:15px;font-weight:bold;padding:0px;}"
         "QPushButton:hover{background:#1e8449;}"
-        "QPushButton:pressed{background:#1e8449;padding-top:1px;}"
+        "QPushButton:pressed{background:#145a32;padding-top:1px;}"
         "QPushButton:focus{outline:none;border:none;}"
     ),
-    TrackerState.RUNNING: (   # âmbar – indica que pausar é a ação disponível
-        "QPushButton{background:#e67e22;color:#fff;border:none;border-radius:4px;"
-        "font-size:16px;padding:0px;}"
+    TrackerState.RUNNING: (
+        "QPushButton{background:#e67e22;color:#fff;border:none;border-radius:5px;"
+        "font-size:15px;font-weight:bold;padding:0px;}"
         "QPushButton:hover{background:#ca6f1e;}"
-        "QPushButton:pressed{background:#ca6f1e;padding-top:1px;}"
+        "QPushButton:pressed{background:#a04000;padding-top:1px;}"
         "QPushButton:focus{outline:none;border:none;}"
     ),
-    TrackerState.PAUSED: (    # verde – convida a retomar
-        "QPushButton{background:#27ae60;color:#fff;border:none;border-radius:4px;"
-        "font-size:16px;padding:0px;}"
+    TrackerState.PAUSED: (
+        "QPushButton{background:#27ae60;color:#fff;border:none;border-radius:5px;"
+        "font-size:15px;font-weight:bold;padding:0px;}"
         "QPushButton:hover{background:#1e8449;}"
-        "QPushButton:pressed{background:#1e8449;padding-top:1px;}"
+        "QPushButton:pressed{background:#145a32;padding-top:1px;}"
         "QPushButton:focus{outline:none;border:none;}"
     ),
 }
@@ -101,23 +163,54 @@ _TOGGLE_STYLE = {
 _TOGGLE_ICON = {
     TrackerState.STOPPED: "▶",
     TrackerState.RUNNING: "⏸",
-    TrackerState.PAUSED:  "▶",
+    TrackerState.PAUSED: "▶",
 }
 
 _TOGGLE_TIP = {
     TrackerState.STOPPED: "Start  (Ctrl+Alt+T)",
     TrackerState.RUNNING: "Pause  (Ctrl+Alt+T)",
-    TrackerState.PAUSED:  "Resume  (Ctrl+Alt+T)",
+    TrackerState.PAUSED: "Resume  (Ctrl+Alt+T)",
 }
 
 _BTN_UTIL = (
     "QPushButton{{background:{bg};color:#fff;border:none;"
-    "border-radius:4px;font-size:13px;padding:0px;}}"
+    "border-radius:5px;font-size:13px;padding:0px;}}"
     "QPushButton:hover{{background:{hv};}}"
     "QPushButton:pressed{{background:{hv};padding-top:1px;}}"
     "QPushButton:focus{{outline:none;border:none;}}"
-    "QPushButton:disabled{{background:#d0d0d0;color:#a0a0a0;}}"
+    "QPushButton:disabled{{background:#d8d8d8;color:#aaa;}}"
 )
+
+_STOP_STYLE = (
+    "QPushButton{background:#c0392b;color:#fff;border:none;"
+    "border-radius:5px;font-size:15px;padding:0px;}"
+    "QPushButton:hover{background:#a93226;}"
+    "QPushButton:pressed{background:#7b241c;padding-top:1px;}"
+    "QPushButton:focus{outline:none;border:none;}"
+    "QPushButton:disabled{background:#d8d8d8;color:#aaa;}"
+)
+
+# Progress bar styles
+_PBAR_BASE = (
+    "QProgressBar{{"
+    "border:1px solid {border};"
+    "border-radius:3px;"
+    "background:{bg};"
+    "height:5px;"
+    "text-align:center;"
+    "}}"
+    "QProgressBar::chunk{{"
+    "background:{chunk};"
+    "border-radius:2px;"
+    "}}"
+)
+
+_PBAR_RUNNING = _PBAR_BASE.format(border="#7dcfa5", bg="#e8faf0", chunk="#27ae60")
+_PBAR_DONE = _PBAR_BASE.format(border="#2e86c1", bg="#d6eaf8", chunk="#2980b9")
+_PBAR_STOPPED = _PBAR_BASE.format(border="#c0c0c0", bg="#f0f0f0", chunk="#aaa")
+
+
+# ── widget ─────────────────────────────────────────────────────────────────────
 
 
 class TrackerWidget(QWidget):
@@ -125,84 +218,94 @@ class TrackerWidget(QWidget):
     def __init__(self, tracker, persistence, settings, parent=None):
         super().__init__(parent)
         self._tracker = tracker
-        self._db      = persistence
-        self._cfg     = settings
+        self._db = persistence
+        self._cfg = settings
         self._build_ui()
         self._wire()
         self._on_project_changed(self._tracker.project_name)
-        self._refresh_project_label_visibility()
+        self._refresh_visibility()
 
     # ── build ─────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(6, 2, 6, 2)
-        lay.setSpacing(4)
+        if _WIDGET_MAX_WIDTH > 0:
+            self.setMaximumWidth(_WIDGET_MAX_WIDTH)
 
-        # Project name label
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(4, 2, 4, 2)
+        outer.setSpacing(2)
+
+        # ── top row ───────────────────────────────────────────────────────────
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(4)
+
+        # Project name
         self._proj_lbl = QLabel("Unsaved project")
         self._proj_lbl.setMaximumWidth(_PROJECT_LABEL_MAX_WIDTH)
-        self._proj_lbl.setStyleSheet(_PROJ_LABEL_STYLE[TrackerState.STOPPED])
-        lay.addWidget(self._proj_lbl)
+        self._proj_lbl.setStyleSheet(_PROJ_STYLE[TrackerState.STOPPED])
+        top.addWidget(self._proj_lbl)
 
-        # Digital clock label — context menu on right-click
+        # Digital clock — right-click for context menu
         self._lbl = QLabel("00:00:00")
-        self._lbl.setFont(_monospace_font(18))
-        self._lbl.setMinimumWidth(100)
-        self._lbl.setAlignment(Qt.AlignCenter)
+        self._lbl.setFont(_monospace_font(17))
+        self._lbl.setMinimumWidth(96)
+        self._lbl.setAlignment(_align_center())
         self._lbl.setStyleSheet(_STATE_STYLE[TrackerState.STOPPED])
-        self._lbl.setContextMenuPolicy(Qt.CustomContextMenu)
-        self._lbl.customContextMenuRequested.connect(self._show_time_context_menu)
-        lay.addWidget(self._lbl)
+        self._lbl.setContextMenuPolicy(_ctx_menu_policy())
+        self._lbl.customContextMenuRequested.connect(self._show_time_menu)
+        top.addWidget(self._lbl)
 
-        # ── Toggle (▶/⏸) – único botão play+pause ──────────────────────────
+        # Toggle ▶/⏸
         self._btn_toggle = QPushButton("▶")
         self._btn_toggle.setToolTip(_TOGGLE_TIP[TrackerState.STOPPED])
         self._btn_toggle.setFixedSize(28, 28)
         self._btn_toggle.setStyleSheet(_TOGGLE_STYLE[TrackerState.STOPPED])
-        self._btn_toggle.setCursor(Qt.PointingHandCursor)
-        lay.addWidget(self._btn_toggle)
+        self._btn_toggle.setCursor(_pointing_hand())
+        top.addWidget(self._btn_toggle)
 
-        # Stop
+        # Stop ⏹
         self._btn_stop = QPushButton("⏹")
         self._btn_stop.setToolTip("Stop")
         self._btn_stop.setFixedSize(28, 28)
-        self._btn_stop.setStyleSheet(
-            "QPushButton{background:#e74c3c;color:#fff;border:none;"
-            "border-radius:4px;font-size:16px;padding:0px;}"
-            "QPushButton:hover{background:#cb4335;}"
-            "QPushButton:pressed{background:#cb4335;padding-top:1px;}"
-            "QPushButton:focus{outline:none;border:none;}"
-            "QPushButton:disabled{background:#d0d0d0;color:#a0a0a0;}"
-        )
-        self._btn_stop.setCursor(Qt.PointingHandCursor)
-        lay.addWidget(self._btn_stop)
+        self._btn_stop.setStyleSheet(_STOP_STYLE)
+        self._btn_stop.setCursor(_pointing_hand())
+        top.addWidget(self._btn_stop)
 
-        # Stats
+        # Stats 📊
         self._btn_stats = QPushButton("📊")
-        self._btn_stats.setToolTip("Stats")
+        self._btn_stats.setToolTip("Statistics")
         self._btn_stats.setFixedSize(28, 28)
-        self._btn_stats.setStyleSheet(
-            _BTN_UTIL.format(bg="#2980b9", hv="#1a5276")
-        )
-        self._btn_stats.setCursor(Qt.PointingHandCursor)
-        lay.addWidget(self._btn_stats)
+        self._btn_stats.setStyleSheet(_BTN_UTIL.format(bg="#2980b9", hv="#1f618d"))
+        self._btn_stats.setCursor(_pointing_hand())
+        top.addWidget(self._btn_stats)
 
-        # Settings
+        # Settings ⚙
         self._btn_cfg = QPushButton("⚙")
         self._btn_cfg.setToolTip("Settings")
         self._btn_cfg.setFixedSize(28, 28)
-        self._btn_cfg.setStyleSheet(
-            _BTN_UTIL.format(bg="#7f8c8d", hv="#626567")
-        )
-        self._btn_cfg.setCursor(Qt.PointingHandCursor)
-        lay.addWidget(self._btn_cfg)
+        self._btn_cfg.setStyleSheet(_BTN_UTIL.format(bg="#717d7e", hv="#566573"))
+        self._btn_cfg.setCursor(_pointing_hand())
+        top.addWidget(self._btn_cfg)
+
+        outer.addLayout(top)
+
+        # ── daily progress bar (optional) ─────────────────────────────────────
+        self._pbar = QProgressBar()
+        self._pbar.setRange(0, 100)
+        self._pbar.setValue(0)
+        self._pbar.setTextVisible(False)
+        self._pbar.setFixedHeight(5)
+        self._pbar.setStyleSheet(_PBAR_STOPPED)
+        self._pbar.setToolTip("Daily progress: 0%")
+        self._pbar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        outer.addWidget(self._pbar)
 
         self._apply_state(TrackerState.STOPPED)
 
-        # Atalho global Ctrl+Alt+T
+        # Keyboard shortcut Ctrl+Alt+T
         self._shortcut = QShortcut(QKeySequence("Ctrl+Alt+T"), self)
-        self._shortcut.setContext(Qt.ApplicationShortcut)
+        self._shortcut.setContext(_app_shortcut())
         self._shortcut.activated.connect(self._tracker.toggle)
 
     # ── wire signals ──────────────────────────────────────────────────────────
@@ -216,10 +319,13 @@ class TrackerWidget(QWidget):
         self._tracker.time_updated.connect(self._on_time)
         self._tracker.state_changed.connect(self._on_state)
         self._tracker.project_changed.connect(self._on_project_changed)
-        self._tracker.settings_changed.connect(self._refresh_project_label_visibility)
+        self._tracker.settings_changed.connect(self._refresh_visibility)
 
         if hasattr(self._tracker, "session_completed"):
             self._tracker.session_completed.connect(self._on_session_completed)
+
+        if hasattr(self._tracker, "daily_updated"):
+            self._tracker.daily_updated.connect(self._on_daily_updated)
 
     # ── slots ─────────────────────────────────────────────────────────────────
 
@@ -229,15 +335,15 @@ class TrackerWidget(QWidget):
 
     def _update_lbl_tooltip(self, secs: int):
         state = self._tracker.state
-        state_labels = {
+        labels = {
             TrackerState.STOPPED: "Stopped",
             TrackerState.RUNNING: "Running",
-            TrackerState.PAUSED:  "Paused",
+            TrackerState.PAUSED: "Paused",
         }
         self._lbl.setToolTip(
-            f"State: {state_labels.get(state, '—')}\n"
-            f"Total: {_fmt(secs)}\n"
-            f"Right-click to copy  |  Ctrl+Alt+T to toggle"
+            f"State: {labels.get(state, '—')}\n"
+            f"Project total: {_fmt(secs)}\n"
+            f"Right-click to copy  ·  Ctrl+Alt+T to toggle"
         )
 
     def _on_state(self, state_name: str):
@@ -249,8 +355,8 @@ class TrackerWidget(QWidget):
             self._proj_lbl.setText("Unsaved project")
             self._proj_lbl.setToolTip("")
             return
-        fm     = QFontMetrics(self._proj_lbl.font())
-        elided = fm.elidedText(name, Qt.ElideRight, _PROJECT_LABEL_MAX_WIDTH - 8)
+        fm = QFontMetrics(self._proj_lbl.font())
+        elided = fm.elidedText(name, _elide_right(), _PROJECT_LABEL_MAX_WIDTH - 8)
         self._proj_lbl.setText(elided)
         key = self._tracker.project_key or ""
         self._proj_lbl.setToolTip(
@@ -268,32 +374,75 @@ class TrackerWidget(QWidget):
         except Exception:
             pass
 
-    def _refresh_project_label_visibility(self):
+    def _on_daily_updated(self, today_secs: int):
+        """Update progress bar with today's total seconds."""
+        goal_secs = self._cfg.daily_goal_hours * 3600
+        if goal_secs <= 0 or not self._cfg.show_daily_progress:
+            return
+        pct = min(100, int(today_secs * 100 / goal_secs))
+        self._pbar.setValue(pct)
+        remaining = max(0, goal_secs - today_secs)
+        tip = f"Today: {_fmt(today_secs)} / {_fmt(goal_secs)}\n" f"Progress: {pct}%"
+        if remaining > 0:
+            tip += f"\nRemaining: {_fmt(remaining)}"
+        else:
+            tip += "\n✓ Daily goal reached!"
+        self._pbar.setToolTip(tip)
+        # Colour: blue when goal met, green otherwise
+        state = self._tracker.state
+        if pct >= 100:
+            self._pbar.setStyleSheet(_PBAR_DONE)
+        elif state == TrackerState.RUNNING:
+            self._pbar.setStyleSheet(_PBAR_RUNNING)
+        else:
+            self._pbar.setStyleSheet(_PBAR_STOPPED)
+
+    def _refresh_visibility(self):
         self._proj_lbl.setVisible(self._cfg.show_project_name)
+        show_pbar = self._cfg.show_daily_progress and self._cfg.daily_goal_hours > 0
+        self._pbar.setVisible(show_pbar)
+        if show_pbar:
+            # Force an immediate update
+            today = self._tracker.today_seconds()
+            self._on_daily_updated(today)
 
     def _apply_state(self, state: TrackerState):
-        # Timer label
         self._lbl.setStyleSheet(_STATE_STYLE[state])
-        self._proj_lbl.setStyleSheet(_PROJ_LABEL_STYLE[state])
+        self._proj_lbl.setStyleSheet(_PROJ_STYLE[state])
 
-        # Toggle button: ícone + cor + tooltip mudam com estado
         self._btn_toggle.setText(_TOGGLE_ICON[state])
         self._btn_toggle.setStyleSheet(_TOGGLE_STYLE[state])
         self._btn_toggle.setToolTip(_TOGGLE_TIP[state])
 
-        # Stop só habilita quando há algo rodando ou pausado
         self._btn_stop.setEnabled(state != TrackerState.STOPPED)
 
-        # Atualiza tooltip do timer
         self._update_lbl_tooltip(self._tracker.current_seconds())
 
-    # ── context menu no label de tempo ────────────────────────────────────────
+        # Refresh progress bar style on state change
+        if self._cfg.show_daily_progress and self._cfg.daily_goal_hours > 0:
+            pct = self._pbar.value()
+            if pct >= 100:
+                self._pbar.setStyleSheet(_PBAR_DONE)
+            elif state == TrackerState.RUNNING:
+                self._pbar.setStyleSheet(_PBAR_RUNNING)
+            else:
+                self._pbar.setStyleSheet(_PBAR_STOPPED)
 
-    def _show_time_context_menu(self, pos: QPoint):
+    # ── context menu on timer label ───────────────────────────────────────────
+
+    def _show_time_menu(self, pos: QPoint):
         menu = QMenu(self)
-        action = menu.addAction("📋  Copy time")
-        action.triggered.connect(self._copy_time)
-        menu.exec_(self._lbl.mapToGlobal(pos))
+        a_copy = menu.addAction("📋  Copy time")
+        a_copy.triggered.connect(self._copy_time)
+        menu.addSeparator()
+        a_toggle = menu.addAction(
+            "⏸  Pause" if self._tracker.state == TrackerState.RUNNING else "▶  Start"
+        )
+        a_toggle.triggered.connect(self._tracker.toggle)
+        a_stop = menu.addAction("⏹  Stop")
+        a_stop.setEnabled(self._tracker.state != TrackerState.STOPPED)
+        a_stop.triggered.connect(self._tracker.stop)
+        menu.exec(self._lbl.mapToGlobal(pos))
 
     def _copy_time(self):
         QApplication.clipboard().setText(self._lbl.text())
@@ -302,8 +451,8 @@ class TrackerWidget(QWidget):
 
     def _open_stats(self):
         dlg = StatsDialog(self._db, tracker=self._tracker, parent=self)
-        dlg.exec_()
+        dlg.exec()
 
     def _open_settings(self):
         dlg = SettingsDialog(self._cfg, self._tracker, parent=self)
-        dlg.exec_()
+        dlg.exec()

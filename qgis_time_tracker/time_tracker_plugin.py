@@ -1,5 +1,14 @@
 """
-TimeTrackerPlugin – QGIS plugin entry point.
+TimeTrackerPlugin – QGIS 4 / Qt 6 entry point.
+
+Qt 6 migration notes
+--------------------
+* QEvent.Type enum members are accessed as QEvent.Type.MouseMove etc. in
+  PyQt6, but PyQt5 exposes them as QEvent.MouseMove.  To support BOTH
+  Qt5 (QGIS 3.x) and Qt6 (QGIS 4.x) we resolve enum values at import time
+  via _qt_event() so the same code runs on either stack.
+* All other APIs used here (QObject, QApplication, QgsProject) are
+  identical between Qt5 and Qt6.
 
 Lifecycle
 ---------
@@ -8,8 +17,8 @@ initGui()  → create DB, tracker, toolbar widget; install event filters;
 unload()   → stop tracker (flush to DB), remove filters, disconnect signals,
              remove toolbar, close DB connection.
 
-Project signals used
---------------------
+Project signals
+---------------
 readProject  – fires after a .qgs/.qgz has been read.
 writeProject – fires after Save/Save-As; used to migrate __unsaved__ time.
 cleared      – fires when the user opens a new empty project.
@@ -17,17 +26,40 @@ cleared      – fires when the user opens a new empty project.
 
 import os
 
-from qgis.PyQt.QtCore import QObject, QEvent
-from qgis.PyQt.QtWidgets import QApplication
 from qgis.core import QgsProject
+from qgis.PyQt.QtCore import QEvent, QObject
+from qgis.PyQt.QtWidgets import QApplication
 
-from .core.settings    import TrackerSettings
 from .core.persistence import PersistenceManager
-from .core.tracker     import TimeTracker, TrackerState, _current_project_name
+from .core.settings import TrackerSettings
+from .core.tracker import TimeTracker, TrackerState, _current_project_name
 from .ui.toolbar_widget import TrackerWidget
+
+# ── Qt5 / Qt6 event-type compat ───────────────────────────────────────────────
+
+
+def _ev(*names):
+    """
+    Resolve QEvent enum members for both PyQt5 (QEvent.MouseMove) and
+    PyQt6 (QEvent.Type.MouseMove).  Falls back gracefully if a name is
+    unavailable on the current Qt version.
+    """
+    results = set()
+    for name in names:
+        # PyQt6 style
+        t = getattr(getattr(QEvent, "Type", None), name, None)
+        if t is not None:
+            results.add(t)
+            continue
+        # PyQt5 style
+        t = getattr(QEvent, name, None)
+        if t is not None:
+            results.add(t)
+    return frozenset(results)
 
 
 # ── event filters ─────────────────────────────────────────────────────────────
+
 
 class _ActivityFilter(QObject):
     """
@@ -36,13 +68,7 @@ class _ActivityFilter(QObject):
     so the idle timer is reset correctly.  Never consumes events.
     """
 
-    _WATCHED = frozenset({
-        QEvent.MouseMove,
-        QEvent.MouseButtonPress,
-        QEvent.KeyPress,
-        QEvent.Wheel,
-        QEvent.TabletMove,
-    })
+    _WATCHED = _ev("MouseMove", "MouseButtonPress", "KeyPress", "Wheel", "TabletMove")
 
     def __init__(self, tracker, parent=None):
         super().__init__(parent)
@@ -61,14 +87,16 @@ class _WindowFilter(QObject):
     (only if the user has enabled pause_on_focus_loss in settings).
     """
 
+    _DEACTIVATE = _ev("WindowDeactivate")
+
     def __init__(self, tracker, settings, parent=None):
         super().__init__(parent)
-        self._t   = tracker
+        self._t = tracker
         self._cfg = settings
 
     def eventFilter(self, obj, event):
         if self._cfg.pause_on_focus_loss:
-            if event.type() == QEvent.WindowDeactivate:
+            if event.type() in self._DEACTIVATE:
                 if self._t.state == TrackerState.RUNNING:
                     self._t.pause()
         return False
@@ -76,29 +104,30 @@ class _WindowFilter(QObject):
 
 # ── plugin ────────────────────────────────────────────────────────────────────
 
+
 class TimeTrackerPlugin:
 
     def __init__(self, iface):
-        self._iface          = iface
-        self._toolbar        = None
-        self._widget         = None
-        self._tracker        = None
-        self._db             = None
-        self._cfg            = None
-        self._act_filter     = None
-        self._win_filter     = None
+        self._iface = iface
+        self._toolbar = None
+        self._widget = None
+        self._tracker = None
+        self._db = None
+        self._cfg = None
+        self._act_filter = None
+        self._win_filter = None
 
     # ── QGIS lifecycle ────────────────────────────────────────────────────────
 
     def initGui(self):
-        self._cfg     = TrackerSettings()
-        self._db      = PersistenceManager()           # crash-recovery runs here
+        self._cfg = TrackerSettings()
+        self._db = PersistenceManager()  # crash-recovery runs here
         self._tracker = TimeTracker(self._db, self._cfg)
 
         # toolbar
         self._toolbar = self._iface.addToolBar("Time Tracker")
         self._toolbar.setObjectName("TimeTrackerToolBar")
-        self._widget  = TrackerWidget(self._tracker, self._db, self._cfg)
+        self._widget = TrackerWidget(self._tracker, self._db, self._cfg)
         self._toolbar.addWidget(self._widget)
 
         # event filters
@@ -131,9 +160,9 @@ class TimeTrackerPlugin:
 
         proj = QgsProject.instance()
         for sig, slot in [
-            (proj.readProject,  self._on_read),
+            (proj.readProject, self._on_read),
             (proj.writeProject, self._on_write),
-            (proj.cleared,      self._on_cleared),
+            (proj.cleared, self._on_cleared),
         ]:
             try:
                 sig.disconnect(slot)
@@ -151,16 +180,13 @@ class TimeTrackerPlugin:
     # ── project signal handlers ───────────────────────────────────────────────
 
     def _on_read(self, doc=None):
-        """New project loaded from disk."""
         self._tracker.load_project()
 
     def _on_write(self, doc=None):
         """
         Called after every Save/Save-As.
-
         If the tracker was following an __unsaved__ project that now has a
-        real path, migrate the accumulated time to the new key so it is not
-        lost.
+        real path, migrate the accumulated time to the new key.
         """
         new_key = QgsProject.instance().absoluteFilePath()
         if not new_key:
@@ -174,8 +200,7 @@ class TimeTrackerPlugin:
             new_name = _current_project_name()
             self._db.migrate_project_path(old_key, new_key, new_name)
 
-            # Update tracker internals without triggering a full load
-            self._tracker._project_key  = new_key
+            self._tracker._project_key = new_key
             self._tracker._project_name = new_name
             self._tracker._base_seconds = self._db.get_project_seconds(new_key)
             self._tracker.time_updated.emit(self._tracker._base_seconds)
@@ -184,11 +209,9 @@ class TimeTrackerPlugin:
                 self._tracker.start()
 
     def _on_cleared(self):
-        """User opened a new empty project."""
         if self._tracker.state != TrackerState.STOPPED:
             self._tracker.stop()
-        # Reset display to zero without a project
-        self._tracker._project_key  = None
+        self._tracker._project_key = None
         self._tracker._project_name = None
         self._tracker._base_seconds = 0
         self._tracker.time_updated.emit(0)

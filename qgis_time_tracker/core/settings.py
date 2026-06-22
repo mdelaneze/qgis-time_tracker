@@ -3,23 +3,32 @@ Thin wrapper around QSettings for Time Tracker preferences.
 All values are read/written under the "TimeTrackerPlugin/" key-space.
 Using bare QSettings() calls (no beginGroup) avoids group-nesting bugs
 when the object is recreated across plugin reloads.
+
+Qt 6 compatibility
+------------------
+QSettings API is unchanged between Qt 5 and Qt 6.  The boolean coercion
+guard (string "true"/"false" → bool) is still necessary because QSettings
+serialises bool as the string "true"/"false" in INI format on all platforms.
 """
 
 _PREFIX = "TimeTrackerPlugin"
 
 _DEFAULTS = {
-    "idle_timeout_minutes":  10,
-    "pause_on_focus_loss":   False,
-    "auto_start_on_open":    False,
-    "confirm_on_reset":      True,
-    "show_project_name":     False,
-    "min_session_seconds":   0,      # sessões menores que isso são descartadas
-    "notify_on_session_end": False,  # notificação no messageBar ao encerrar sessão
+    "idle_timeout_minutes": 10,
+    "pause_on_focus_loss": False,
+    "auto_start_on_open": False,
+    "confirm_on_reset": True,
+    "show_project_name": False,
+    "min_session_seconds": 60,
+    "notify_on_session_end": True,
+    "daily_goal_hours": 0,  # 0 = disabled; >0 shows progress in toolbar
+    "show_daily_progress": False,  # show daily goal progress bar in toolbar
 }
 
 
 def _qs():
     from qgis.PyQt.QtCore import QSettings
+
     return QSettings()
 
 
@@ -35,7 +44,15 @@ def _get(name: str):
             return v.lower() == "true"
         return bool(v)
     if isinstance(default, int):
-        return int(v)
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return default
+    if isinstance(default, float):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return default
     return v
 
 
@@ -78,7 +95,6 @@ class TrackerSettings:
 
     @property
     def confirm_on_reset(self) -> bool:
-        """Show confirmation dialog before resetting a project's time counter."""
         return _get("confirm_on_reset")
 
     @confirm_on_reset.setter
@@ -87,7 +103,6 @@ class TrackerSettings:
 
     @property
     def show_project_name(self) -> bool:
-        """Show the active project name label in the toolbar widget."""
         return _get("show_project_name")
 
     @show_project_name.setter
@@ -96,7 +111,6 @@ class TrackerSettings:
 
     @property
     def min_session_seconds(self) -> int:
-        """Sessions shorter than this are discarded on pause/stop."""
         return _get("min_session_seconds")
 
     @min_session_seconds.setter
@@ -105,9 +119,26 @@ class TrackerSettings:
 
     @property
     def notify_on_session_end(self) -> bool:
-        """Show a messageBar notification when a session ends."""
         return _get("notify_on_session_end")
 
     @notify_on_session_end.setter
     def notify_on_session_end(self, v: bool):
         _set("notify_on_session_end", bool(v))
+
+    @property
+    def daily_goal_hours(self) -> int:
+        """Daily work-hour goal (0 = disabled)."""
+        return _get("daily_goal_hours")
+
+    @daily_goal_hours.setter
+    def daily_goal_hours(self, v: int):
+        _set("daily_goal_hours", int(v))
+
+    @property
+    def show_daily_progress(self) -> bool:
+        """Show the daily progress bar in the toolbar."""
+        return _get("show_daily_progress")
+
+    @show_daily_progress.setter
+    def show_daily_progress(self, v: bool):
+        _set("show_daily_progress", bool(v))
