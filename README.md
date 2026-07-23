@@ -11,18 +11,24 @@ The plugin adds a small toolbar to QGIS so you can start, pause, stop, inspect s
 - Per-project time tracking with independent totals for each `.qgs` or `.qgz` project
 - Start, pause, resume, and stop controls in a dedicated toolbar
 - Automatic persistence in SQLite
-- Crash recovery based on heartbeat checkpoints
+- Transactional SQLite migrations with versioned backups
+- Crash recovery based on heartbeat checkpoints, including quarantine of
+  malformed recovery records
 - Tracking for unsaved projects, with migration to the real file path after the first save
+- Independent history after `Save As`
 - Optional auto-start when a project is opened
 - Optional auto-pause after inactivity
 - Optional auto-pause when QGIS loses focus or is minimized
+- Minimum session duration enforced during normal use and crash recovery
+- Sessions spanning midnight split across local calendar days
 - Session history with recovered-session flag
 - Summary statistics with KPIs, recent sessions, and activity heatmap
 - Project management actions: copy time, reset total, delete project record
 - Session management: delete individual sessions and recalculate totals
-- CSV and JSON export
+- Project summaries and detailed sessions in CSV and JSON exports
 - Optional toolbar project name
 - Optional daily goal and toolbar progress bar
+- Accessible textual state for running and paused sessions
 - Keyboard shortcut: `Ctrl+Alt+T` to start/pause/resume
 
 ## Compatibility
@@ -114,7 +120,9 @@ The statistics dialog has three tabs:
 - see recovered sessions flagged in the table
 - delete individual sessions
 
-The dialog also supports exporting tracked data to CSV or JSON.
+The dialog also supports exporting tracked data to CSV or JSON. Live sessions
+are included in the summary indicators, which continue updating while the
+statistics window is open.
 
 ## Data storage
 
@@ -130,6 +138,7 @@ The database schema includes:
 - `sessions`: individual tracked sessions
 - `active_session`: the currently running session used for crash recovery
 - `daily_totals`: aggregated daily totals used by the summary views
+- `recovery_errors`: malformed active sessions preserved for diagnosis
 
 SQLite is opened with:
 
@@ -141,28 +150,43 @@ SQLite is opened with:
 
 - While tracking is running, the plugin updates a heartbeat every 5 seconds.
 - If QGIS crashes, the plugin recovers the last active session from the saved heartbeat on the next startup.
+- The configured minimum duration is also enforced during recovery.
 - Recovered sessions are marked in session history and in the recent sessions summary.
+- Invalid recovery records are preserved for diagnosis and reported in QGIS
+  without preventing a new session from starting.
 
 In practice, this means a crash should lose at most about 5 seconds of tracked time.
 
 ## Unsaved projects
 
-Unsaved projects are tracked under an internal `__unsaved__` key.
+Each unsaved project is tracked under a distinct internal `__unsaved__` key.
 
 When the project is saved for the first time, the plugin migrates accumulated totals and session history to the real project path so the tracked data is preserved.
+
+When an already-saved project is saved under a different path, its existing
+history remains with the original file and the new file starts an independent
+tracking record.
 
 ## Export formats
 
 ### CSV
 
-Exports one row per project with:
+Exports project summary rows and session detail rows with:
 
+- `record_type`
 - `project_name`
 - `project_path`
 - `total_seconds`
 - `total_time_hms`
 - `session_count`
 - `last_accessed`
+- `session_id`
+- `start_time`
+- `end_time`
+- `duration_seconds`
+- `duration_hms`
+- `recovered`
+- `counts_toward_total`
 
 ### JSON
 
@@ -172,15 +196,24 @@ Exports the same project-level fields plus nested session history for each proje
 - `end_time`
 - `duration_seconds`
 - `recovered`
+- `counts_toward_total`
 
-## Current limitations
+## Database upgrades
 
-- There are no automated tests in this repository yet.
-- Daily totals are keyed by the session start date, so sessions spanning midnight are not split across two calendar days.
-- The `Minimum session duration` setting is exposed in the UI, but the current implementation still persists short sessions instead of discarding them.
-- The `confirm before resetting` preference is exposed in settings, but reset actions currently still ask for confirmation.
+Existing databases are upgraded automatically. Before changing an older schema,
+the plugin creates a backup beside the database using the name
+`time_tracker.db.bak-v<version>`. Project paths are normalized during migration
+so equivalent paths do not create duplicate records, including case and
+separator differences on Windows.
 
+## Development and tests
 
+Run the headless test suite with the Python environment that exposes the QGIS
+bindings:
+
+```bash
+python -m pytest
+```
 
 ## License
 

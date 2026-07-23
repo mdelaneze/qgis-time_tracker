@@ -10,11 +10,13 @@ every 5 s during long sessions.
 
 import os
 import time
+import uuid
 from enum import Enum
 
 from qgis.core import QgsProject
 from qgis.PyQt.QtCore import QObject, QTimer, pyqtSignal
-from qgis.utils import iface
+
+from .persistence import normalize_project_path
 
 
 class TrackerState(Enum):
@@ -26,11 +28,6 @@ class TrackerState(Enum):
 # ── module-level helpers ───────────────────────────────────────────────────────
 
 
-def _current_project_key() -> str:
-    path = QgsProject.instance().absoluteFilePath()
-    return path if path else "__unsaved__"
-
-
 def _current_project_name() -> str:
     title = QgsProject.instance().title()
     if title:
@@ -38,7 +35,7 @@ def _current_project_name() -> str:
     path = QgsProject.instance().absoluteFilePath()
     if path:
         return os.path.splitext(os.path.basename(path))[0]
-    return "Unsaved Project"
+    return "Projeto não salvo"
 
 
 # ── main class ─────────────────────────────────────────────────────────────────
@@ -80,7 +77,8 @@ class TimeTracker(QObject):
         self._session_start_iso = None
         self._project_key = None
         self._project_name = None
-        self._warned_no_project = False
+        self._unsaved_key = None
+        self._pause_reason = None
         self._daily_tick_count = 0  # counts 1-s ticks; emits daily_updated every 60
 
         self._display_timer = QTimer(self)
@@ -111,15 +109,25 @@ class TimeTracker(QObject):
     def project_name(self) -> str:
         return self._project_name or ""
 
+    @property
+    def pause_reason(self) -> str:
+        return self._pause_reason or ""
+
     # ── public API ────────────────────────────────────────────────────────────
 
-    def load_project(self):
+    def load_project(self, force_new_unsaved: bool = False):
         """
         Called when QGIS opens a project or the plugin initialises.
         Saves and stops the current session (if any), then loads the new
         project's accumulated time.
         """
-        key = _current_project_key()
+        path = QgsProject.instance().absoluteFilePath()
+        if path:
+            key = normalize_project_path(path)
+        else:
+            if force_new_unsaved or self._unsaved_key is None:
+                self._unsaved_key = f"__unsaved__:{uuid.uuid4().hex}"
+            key = self._unsaved_key
         if key == self._project_key:
             new_name = _current_project_name()
             if new_name != self._project_name:
@@ -135,7 +143,7 @@ class TimeTracker(QObject):
         self._project_name = _current_project_name()
         self._base_seconds = self._db.get_project_seconds(key)
         self._state = TrackerState.STOPPED
-        self._warned_no_project = False
+        self._pause_reason = None
         self._daily_tick_count = 0
 
         self.state_changed.emit(self._state.value)
@@ -146,33 +154,44 @@ class TimeTracker(QObject):
             self.start()
 
     def on_project_saved(self, new_path: str):
+        """Atualiza o projeto após salvar, sem transferir histórico em Salvar como."""
+        new_path = normalize_project_path(new_path)
         if not new_path or new_path == self._project_key:
             return
 
-        old_key = self._project_key or "__unsaved__"
-        new_name = os.path.splitext(os.path.basename(new_path))[0] or new_path
+        old_key = self._project_key
+        was_running = self._state == TrackerState.RUNNING
+        if was_running:
+            self.pause()
 
-        self._db.migrate_project_path(old_key, new_path, new_name)
-
+        new_name = _current_project_name()
+        if old_key and old_key.startswith("__unsaved__"):
+            self._db.migrate_project_path(old_key, new_path, new_name)
         self._project_key = new_path
         self._project_name = new_name
-
-        if self._state == TrackerState.RUNNING:
-            self._db.update_active_session_path(new_path)
-
+        self._base_seconds = self._db.get_project_seconds(new_path)
+        self.time_updated.emit(self._base_seconds)
         self.project_changed.emit(self._project_name)
+        if was_running:
+            self.start()
 
     def start(self):
         if self._state == TrackerState.RUNNING:
             return
+        if not self._project_key:
+            self.load_project()
 
-        self._warned_no_project = False
-        self._session_start_ts = time.monotonic()
+        now = time.monotonic()
+        self._last_activity_ts = now
+        self._session_start_ts = now
         self._session_start_iso = self._db.begin_active_session(
-            self._project_key, self._base_seconds
+            self._project_key,
+            self._base_seconds,
+            max(0, int(getattr(self._cfg, "min_session_seconds", 0))),
         )
 
         self._state = TrackerState.RUNNING
+        self._pause_reason = None
         self._display_timer.start()
         self._heartbeat_timer.start()
 
@@ -181,12 +200,13 @@ class TimeTracker(QObject):
 
         self.state_changed.emit(self._state.value)
 
-    def pause(self):
+    def pause(self, reason: str = "manual", effective_elapsed: int = None):
         if self._state != TrackerState.RUNNING:
             return
 
-        self._commit_running()
+        self._commit_running(effective_elapsed)
         self._state = TrackerState.PAUSED
+        self._pause_reason = reason
         self._stop_timers()
 
         self.state_changed.emit(self._state.value)
@@ -202,6 +222,7 @@ class TimeTracker(QObject):
             self._db.clear_active_session()
 
         self._state = TrackerState.STOPPED
+        self._pause_reason = None
         self._stop_timers()
 
         self.state_changed.emit(self._state.value)
@@ -248,17 +269,44 @@ class TimeTracker(QObject):
             return self._base_seconds + int(time.monotonic() - self._session_start_ts)
         return self._base_seconds
 
+    def running_elapsed_seconds(self) -> int:
+        if self._state == TrackerState.RUNNING and self._session_start_ts is not None:
+            return max(0, int(time.monotonic() - self._session_start_ts))
+        return 0
+
     def today_seconds(self) -> int:
         """Total seconds tracked today (all projects) from DB + live session."""
         db_today = self._db.get_today_seconds()
-        if self._state == TrackerState.RUNNING and self._session_start_ts is not None:
-            db_today += int(time.monotonic() - self._session_start_ts)
+        elapsed = self.running_elapsed_seconds()
+        if elapsed and self._session_start_iso:
+            db_today += self._db.live_today_seconds(self._session_start_iso, elapsed)
         return db_today
+
+    def current_week_seconds(self) -> int:
+        total = self._db.get_current_week_seconds()
+        elapsed = self.running_elapsed_seconds()
+        if elapsed and self._session_start_iso:
+            total += self._db.live_current_week_seconds(
+                self._session_start_iso, elapsed
+            )
+        return total
 
     # ── private helpers ───────────────────────────────────────────────────────
 
-    def _commit_running(self):
-        elapsed = int(time.monotonic() - self._session_start_ts)
+    def _commit_running(self, effective_elapsed: int = None):
+        elapsed = (
+            self.running_elapsed_seconds()
+            if effective_elapsed is None
+            else max(0, int(effective_elapsed))
+        )
+        min_secs = max(0, int(getattr(self._cfg, "min_session_seconds", 0)))
+        if elapsed < min_secs:
+            self._db.clear_active_session()
+            self._session_start_ts = None
+            self._session_start_iso = None
+            self._daily_tick_count = 0
+            return
+
         self._base_seconds += elapsed
         self._db.update_project_seconds(
             self._project_key, self._base_seconds, self._project_name
@@ -268,8 +316,7 @@ class TimeTracker(QObject):
         self._session_start_iso = None
         self._daily_tick_count = 0
 
-        min_secs = getattr(self._cfg, "min_session_seconds", 0)
-        if elapsed > min_secs:
+        if elapsed > 0:
             self.session_completed.emit(elapsed)
 
     def _stop_timers(self):
@@ -292,4 +339,9 @@ class TimeTracker(QObject):
         if timeout_secs > 0:
             idle_for = time.monotonic() - self._last_activity_ts
             if idle_for >= timeout_secs:
-                self.pause()
+                effective_elapsed = (
+                    self._last_activity_ts
+                    + timeout_secs
+                    - self._session_start_ts
+                )
+                self.pause(reason="idle", effective_elapsed=int(effective_elapsed))
