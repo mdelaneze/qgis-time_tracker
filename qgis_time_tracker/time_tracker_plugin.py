@@ -29,6 +29,7 @@ from qgis.PyQt.QtCore import QEvent, QObject
 from qgis.PyQt.QtWidgets import QApplication
 
 from .core.persistence import PersistenceManager
+from .core.i18n import tr
 from .core.settings import TrackerSettings
 from .core.tracker import TimeTracker, TrackerState
 from .ui.toolbar_widget import TrackerWidget
@@ -126,7 +127,7 @@ class TimeTrackerPlugin:
         self._tracker = TimeTracker(self._db, self._cfg)
 
         # toolbar
-        self._toolbar = self._iface.addToolBar("Controle de Tempo")
+        self._toolbar = self._iface.addToolBar(tr("Time Tracker", self._cfg.language))
         self._toolbar.setObjectName("TimeTrackerToolBar")
         self._widget = TrackerWidget(self._tracker, self._db, self._cfg)
         self._toolbar.addWidget(self._widget)
@@ -134,7 +135,7 @@ class TimeTrackerPlugin:
         # event filters
         app = QApplication.instance()
         if app is None:
-            raise RuntimeError("A aplicação Qt do QGIS não está disponível.")
+            raise RuntimeError("The QGIS Qt application is not available.")
         self._act_filter = _ActivityFilter(self._tracker)
         app.installEventFilter(self._act_filter)
 
@@ -156,20 +157,31 @@ class TimeTrackerPlugin:
             return
         latest = errors[-1]
         message = (
-            f"{len(errors)} sessão(ões) não puderam ser recuperadas e foram "
-            "preservadas para diagnóstico. Consulte o painel de mensagens do QGIS."
+            tr(
+                "{count} session(s) could not be recovered and were preserved for "
+                "diagnosis. See the QGIS message log.",
+                self._cfg.language,
+                count=len(errors),
+            )
         )
         QgsMessageLog.logMessage(
-            f"{message} Último projeto: {latest['project_path']}. "
-            f"Erro: {latest['error_message']}",
+            f"{message} "
+            + tr(
+                "Last project: {project}\nError: {error}",
+                self._cfg.language,
+                project=latest["project_path"],
+                error=latest["error_message"],
+            ),
             _LOG_TAG,
             Qgis.Warning,
         )
         try:
-            self._iface.messageBar().pushWarning("Controle de Tempo", message)
+            self._iface.messageBar().pushWarning(
+                tr("Time Tracker", self._cfg.language), message
+            )
         except (AttributeError, RuntimeError):
             QgsMessageLog.logMessage(
-                "A barra de mensagens não estava disponível para exibir o aviso.",
+                "The message bar was not available to display the warning.",
                 _LOG_TAG,
                 Qgis.Info,
             )
@@ -215,9 +227,9 @@ class TimeTrackerPlugin:
         self._tracker = None
 
     def open_tool(self):
-        """Exibe e destaca a barra do Controle de Tempo."""
+        """Show and focus the Time Tracker toolbar."""
         if self._toolbar is None:
-            raise RuntimeError("A barra do Controle de Tempo não foi inicializada.")
+            raise RuntimeError("The Time Tracker toolbar has not been initialized.")
         self._toolbar.show()
         self._toolbar.raise_()
         if self._widget is not None:

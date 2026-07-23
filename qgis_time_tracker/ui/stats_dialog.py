@@ -28,6 +28,8 @@ from qgis.PyQt.QtWidgets import (
     QWidget,
 )
 
+from ..core.i18n import tr
+
 # ── Qt5 / Qt6 enum compat ──────────────────────────────────────────────────────
 
 
@@ -173,7 +175,8 @@ class StatsDialog(QDialog):
         self._db = persistence
         self._tracker = tracker
         self._cfg = settings
-        self.setWindowTitle("Controle de Tempo – Estatísticas")
+        self._language = getattr(settings, "language", "en")
+        self.setWindowTitle(self._t("Time Tracker – Statistics"))
         self.setMinimumSize(860, 600)
         self._build_ui()
         self._load_data()
@@ -192,13 +195,13 @@ class StatsDialog(QDialog):
         tabs = QTabWidget()
 
         # ── Summary tab ───────────────────────────────────────────────────────
-        tabs.addTab(self._build_summary_tab(), "Resumo")
+        tabs.addTab(self._build_summary_tab(), self._t("Summary"))
 
         # ── Projects tab ──────────────────────────────────────────────────────
-        tabs.addTab(self._build_projects_tab(), "Projetos")
+        tabs.addTab(self._build_projects_tab(), self._t("Projects"))
 
         # ── Sessions tab ──────────────────────────────────────────────────────
-        tabs.addTab(self._build_sessions_tab(), "Histórico de sessões")
+        tabs.addTab(self._build_sessions_tab(), self._t("Session history"))
 
         root.addWidget(tabs)
 
@@ -212,20 +215,20 @@ class StatsDialog(QDialog):
         bottom.addWidget(self._lbl_grand_total)
         bottom.addStretch()
 
-        btn_refresh = QPushButton("Atualizar")
-        btn_refresh.setToolTip("Recarrega os dados do banco local.")
+        btn_refresh = QPushButton(self._t("Refresh"))
+        btn_refresh.setToolTip(self._t("Reloads data from the local database."))
         btn_refresh.clicked.connect(self._load_data)
         bottom.addWidget(btn_refresh)
 
-        btn_csv = QPushButton("Exportar CSV")
+        btn_csv = QPushButton(self._t("Export CSV"))
         btn_csv.clicked.connect(self._export_csv)
         bottom.addWidget(btn_csv)
 
-        btn_json = QPushButton("Exportar JSON")
+        btn_json = QPushButton(self._t("Export JSON"))
         btn_json.clicked.connect(self._export_json)
         bottom.addWidget(btn_json)
 
-        btn_close = QPushButton("Fechar")
+        btn_close = QPushButton(self._t("Close"))
         btn_close.clicked.connect(self.accept)
         bottom.addWidget(btn_close)
 
@@ -242,11 +245,19 @@ class StatsDialog(QDialog):
         self._kpi_row = QHBoxLayout()
         self._kpi_row.setSpacing(8)
 
-        self._kpi_today = self._make_kpi("Hoje", "00:00:00", "#2980b9")
-        self._kpi_week = self._make_kpi("Esta semana", "00:00:00", "#27ae60")
-        self._kpi_total = self._make_kpi("Total geral", "00:00:00", "#8e44ad")
-        self._kpi_streak = self._make_kpi("Dias consecutivos", "0 dias", "#e67e22")
-        self._kpi_projects = self._make_kpi("Projetos", "0", "#16a085")
+        self._kpi_today = self._make_kpi(self._t("Today"), "00:00:00", "#2980b9")
+        self._kpi_week = self._make_kpi(
+            self._t("This week"), "00:00:00", "#27ae60"
+        )
+        self._kpi_total = self._make_kpi(
+            self._t("All time"), "00:00:00", "#8e44ad"
+        )
+        self._kpi_streak = self._make_kpi(
+            self._t("Consecutive days"),
+            self._t("{count} days", count=0),
+            "#e67e22",
+        )
+        self._kpi_projects = self._make_kpi(self._t("Projects"), "0", "#16a085")
 
         for w in [
             self._kpi_today,
@@ -268,7 +279,7 @@ class StatsDialog(QDialog):
         lay.addWidget(div)
 
         # Activity heatmap (last 12 weeks, Mon–Sun grid)
-        lbl_heat = QLabel("Atividade – últimas 12 semanas")
+        lbl_heat = QLabel(self._t("Activity – last 12 weeks"))
         lbl_heat.setStyleSheet("font-weight:600; color:#444; font-size:11px;")
         lay.addWidget(lbl_heat)
 
@@ -286,13 +297,18 @@ class StatsDialog(QDialog):
         lay.addWidget(self._lbl_recovery)
 
         # Recent sessions mini-table
-        lbl_recent = QLabel("Sessões recentes")
+        lbl_recent = QLabel(self._t("Recent sessions"))
         lbl_recent.setStyleSheet("font-weight:600; color:#444; font-size:11px;")
         lay.addWidget(lbl_recent)
 
         self._recent_tbl = QTableWidget(0, 4)
         self._recent_tbl.setHorizontalHeaderLabels(
-            ["Projeto", "Início", "Duração", "Rec."]
+            [
+                self._t("Project"),
+                self._t("Started"),
+                self._t("Duration"),
+                self._t("Recovered"),
+            ]
         )
         hdr = self._recent_tbl.horizontalHeader()
         hdr.setSectionResizeMode(0, _stretch())
@@ -345,9 +361,9 @@ class StatsDialog(QDialog):
 
         # Filter bar
         filter_row = QHBoxLayout()
-        filter_row.addWidget(QLabel("Filtrar:"))
+        filter_row.addWidget(QLabel(self._t("Filter:")))
         self._filter_edit = QLineEdit()
-        self._filter_edit.setPlaceholderText("Filtrar por nome ou caminho…")
+        self._filter_edit.setPlaceholderText(self._t("Filter by name or path…"))
         self._filter_edit.setClearButtonEnabled(True)
         self._filter_edit.textChanged.connect(self._filter_projects)
         filter_row.addWidget(self._filter_edit)
@@ -355,7 +371,13 @@ class StatsDialog(QDialog):
 
         self._proj_tbl = QTableWidget(0, 5)
         self._proj_tbl.setHorizontalHeaderLabels(
-            ["Projeto", "Caminho", "Tempo total", "Sessões", "Último acesso"]
+            [
+                self._t("Project"),
+                self._t("Path"),
+                self._t("Total time"),
+                self._t("Sessions"),
+                self._t("Last accessed"),
+            ]
         )
         hdr = self._proj_tbl.horizontalHeader()
         hdr.setSectionResizeMode(0, _resize_contents())
@@ -381,27 +403,31 @@ class StatsDialog(QDialog):
         proj_actions.addWidget(self._lbl_proj_total)
         proj_actions.addStretch()
 
-        self._btn_copy_time = QPushButton("Copiar tempo")
+        self._btn_copy_time = QPushButton(self._t("Copy time"))
         self._btn_copy_time.setToolTip(
-            "Copia o tempo total do projeto selecionado."
+            self._t("Copies the selected project's total time.")
         )
         self._btn_copy_time.setEnabled(False)
         self._btn_copy_time.clicked.connect(self._copy_project_time)
         proj_actions.addWidget(self._btn_copy_time)
 
-        self._btn_reset_proj = QPushButton("Zerar contador")
+        self._btn_reset_proj = QPushButton(self._t("Reset timer"))
         self._btn_reset_proj.setToolTip(
-            "Zera o contador do projeto selecionado.\n"
-            "O projeto e o histórico de sessões são preservados."
+            self._t(
+                "Resets the selected project's timer.\n"
+                "The project and session history are preserved."
+            )
         )
         self._btn_reset_proj.setEnabled(False)
         self._btn_reset_proj.clicked.connect(self._reset_project_time)
         proj_actions.addWidget(self._btn_reset_proj)
 
-        self._btn_del_proj = QPushButton("Excluir registro")
+        self._btn_del_proj = QPushButton(self._t("Delete record"))
         self._btn_del_proj.setToolTip(
-            "Remove permanent o projeto selecionado e todas as sessões.\n"
-            "Esta ação não pode ser desfeita."
+            self._t(
+                "Permanently removes the selected project and all sessions.\n"
+                "This action cannot be undone."
+            )
         )
         self._btn_del_proj.setEnabled(False)
         self._btn_del_proj.clicked.connect(self._delete_project)
@@ -418,7 +444,13 @@ class StatsDialog(QDialog):
 
         self._sess_tbl = QTableWidget(0, 5)
         self._sess_tbl.setHorizontalHeaderLabels(
-            ["Projeto", "Início", "Fim", "Duração", "Rec."]
+            [
+                self._t("Project"),
+                self._t("Started"),
+                self._t("Ended"),
+                self._t("Duration"),
+                self._t("Recovered"),
+            ]
         )
         shdr = self._sess_tbl.horizontalHeader()
         shdr.setSectionResizeMode(0, _stretch())
@@ -442,9 +474,11 @@ class StatsDialog(QDialog):
         sess_actions.addWidget(self._lbl_sess_total)
         sess_actions.addStretch()
 
-        self._btn_del_sess = QPushButton("Excluir sessão")
+        self._btn_del_sess = QPushButton(self._t("Delete session"))
         self._btn_del_sess.setToolTip(
-            "Remove a sessão selecionada e recalcula o total do projeto."
+            self._t(
+                "Removes the selected session and recalculates the project total."
+            )
         )
         self._btn_del_sess.setEnabled(False)
         self._btn_del_sess.clicked.connect(self._delete_session)
@@ -469,7 +503,10 @@ class StatsDialog(QDialog):
         proj_count = len(all_projects)
         streak = self._db.get_streak_days()
         self._kpi_streak._value_label.setText(
-            f"{streak} dia{'s' if streak != 1 else ''}"
+            self._t(
+                "{count} day" if streak == 1 else "{count} days",
+                count=streak,
+            )
         )
         self._kpi_projects._value_label.setText(str(proj_count))
 
@@ -477,13 +514,18 @@ class StatsDialog(QDialog):
         if recovery_errors:
             latest = recovery_errors[0]
             self._lbl_recovery.setText(
-                f"Atenção: {len(recovery_errors)} sessão(ões) não puderam ser "
-                "recuperadas automaticamente. Os registros foram preservados "
-                "para diagnóstico."
+                self._t(
+                    "Warning: {count} session(s) could not be recovered automatically. "
+                    "The records were preserved for diagnosis.",
+                    count=len(recovery_errors),
+                )
             )
             self._lbl_recovery.setToolTip(
-                f"Último projeto: {latest['project_path']}\n"
-                f"Erro: {latest['error_message']}"
+                self._t(
+                    "Last project: {project}\nError: {error}",
+                    project=latest["project_path"],
+                    error=latest["error_message"],
+                )
             )
             self._lbl_recovery.show()
         else:
@@ -497,11 +539,13 @@ class StatsDialog(QDialog):
         self._recent_tbl.setSortingEnabled(False)
         self._recent_tbl.setRowCount(len(sessions))
         for r, s in enumerate(sessions):
-            name = s["project_name"] or os.path.basename(s["project_path"])
+            name = self._project_display_name(
+                s["project_name"] or os.path.basename(s["project_path"])
+            )
             ni = QTableWidgetItem(name)
             if s["recovered"]:
                 ni.setForeground(QColor("#c0392b"))
-                ni.setToolTip("Recuperada após encerramento inesperado")
+                ni.setToolTip(self._t("Recovered after an unexpected shutdown"))
             self._recent_tbl.setItem(r, 0, ni)
             self._recent_tbl.setItem(
                 r,
@@ -612,7 +656,7 @@ class StatsDialog(QDialog):
         legend = QHBoxLayout()
         legend.setSpacing(4)
         legend.addStretch()
-        legend.addWidget(QLabel("Menos"))
+        legend.addWidget(QLabel(self._t("Less")))
         for c in _HEAT_COLOURS:
             lc = QLabel()
             lc.setFixedSize(10, 10)
@@ -620,7 +664,7 @@ class StatsDialog(QDialog):
                 f"background:{c};border-radius:2px;border:1px solid rgba(0,0,0,0.1);"
             )
             legend.addWidget(lc)
-        legend.addWidget(QLabel("Mais"))
+        legend.addWidget(QLabel(self._t("More")))
         grid_lay.addLayout(legend)
 
     # ── projects loading ──────────────────────────────────────────────────────
@@ -639,7 +683,11 @@ class StatsDialog(QDialog):
         if self._tracker:
             total_secs += self._tracker.running_elapsed_seconds()
         self._lbl_proj_total.setText(
-            f"{len(self._all_projects)} projeto(s) · Total: {_fmt(total_secs)}"
+            self._t(
+                "{count} project(s) · Total: {total}",
+                count=len(self._all_projects),
+                total=_fmt(total_secs),
+            )
         )
 
         self._btn_reset_proj.setEnabled(False)
@@ -658,7 +706,9 @@ class StatsDialog(QDialog):
             self._filter_projects(self._filter_edit.text())
 
     def _set_project_row(self, r, p, active_key):
-        name_item = QTableWidgetItem(p["project_name"] or "—")
+        name_item = QTableWidgetItem(
+            self._project_display_name(p["project_name"] or "—")
+        )
         name_item.setData(_user_role(), p["project_path"])
 
         is_active = p["project_path"] == active_key
@@ -667,7 +717,7 @@ class StatsDialog(QDialog):
             f.setBold(True)
             name_item.setFont(f)
             name_item.setForeground(QColor("#0a3d22"))
-            name_item.setToolTip("Projeto atual")
+            name_item.setToolTip(self._t("Current project"))
 
         self._proj_tbl.setItem(r, 0, name_item)
         self._proj_tbl.setItem(r, 1, QTableWidgetItem(p["project_path"]))
@@ -702,13 +752,15 @@ class StatsDialog(QDialog):
         self._sess_tbl.setRowCount(len(sessions))
 
         for r, s in enumerate(sessions):
-            name = s["project_name"] or os.path.basename(s["project_path"])
+            name = self._project_display_name(
+                s["project_name"] or os.path.basename(s["project_path"])
+            )
             name_item = QTableWidgetItem(name)
             name_item.setData(_user_role(), s["id"])
 
             if s["recovered"]:
                 name_item.setForeground(QColor("#c0392b"))
-                name_item.setToolTip("Sessão recuperada após falha do QGIS")
+                name_item.setToolTip(self._t("Session recovered after a QGIS failure"))
 
             self._sess_tbl.setItem(r, 0, name_item)
             self._sess_tbl.setItem(
@@ -738,7 +790,11 @@ class StatsDialog(QDialog):
 
         total_secs = sum(s["duration_seconds"] for s in sessions)
         self._lbl_sess_total.setText(
-            f"{len(sessions)} sessão(ões) · Total: {_fmt(total_secs)}"
+            self._t(
+                "{count} session(s) · Total: {total}",
+                count=len(sessions),
+                total=_fmt(total_secs),
+            )
         )
 
         self._btn_del_sess.setEnabled(False)
@@ -758,7 +814,11 @@ class StatsDialog(QDialog):
             grand += self._tracker.running_elapsed_seconds()
         count = len(projects)
         self._lbl_grand_total.setText(
-            f"Total registrado: {_fmt(grand)}  ·  {count} projeto(s)"
+            self._t(
+                "Total tracked: {total}  ·  {count} project(s)",
+                total=_fmt(grand),
+                count=count,
+            )
         )
 
     # ── filter ────────────────────────────────────────────────────────────────
@@ -834,9 +894,11 @@ class StatsDialog(QDialog):
         if self._is_active_project(project_path):
             QMessageBox.warning(
                 self,
-                "Projeto em registro",
-                "Este projeto está sendo registrado.\n\n"
-                "Encerre a sessão antes de zerar o contador.",
+                self._t("Project is being tracked"),
+                self._t(
+                    "This project is currently being tracked.\n\n"
+                    "End the session before resetting the timer."
+                ),
             )
             return
 
@@ -850,10 +912,13 @@ class StatsDialog(QDialog):
         if self._cfg is None or self._cfg.confirm_on_reset:
             reply = QMessageBox.question(
                 self,
-                "Zerar tempo do projeto",
-                f"Zerar o tempo acumulado de:\n\n<b>{name}</b>\n\n"
-                f"O projeto e as sessões serão preservados como histórico. "
-                f"Somente o contador será reiniciado em 00:00:00.",
+                self._t("Reset project time"),
+                self._t(
+                    "Reset the accumulated time for:\n\n<b>{name}</b>\n\n"
+                    "The project and sessions will be preserved as history. "
+                    "Only the timer will be reset to 00:00:00.",
+                    name=name,
+                ),
                 _mb_yes() | _mb_cancel(),
                 _mb_cancel(),
             )
@@ -872,9 +937,11 @@ class StatsDialog(QDialog):
         if self._is_active_project(project_path):
             QMessageBox.warning(
                 self,
-                "Projeto em registro",
-                "Este projeto está sendo registrado.\n\n"
-                "Encerre a sessão antes de excluir.",
+                self._t("Project is being tracked"),
+                self._t(
+                    "This project is currently being tracked.\n\n"
+                    "End the session before deleting it."
+                ),
             )
             return
 
@@ -885,13 +952,16 @@ class StatsDialog(QDialog):
 
         reply = QMessageBox.warning(
             self,
-            "Excluir registro do projeto",
-            f"Excluir permanentemente o registro de:\n\n<b>{project_name}</b>\n"
-            f"Tempo total: {total_time}\n"
-            f"Sessões: {session_count}\n\n"
-            f"<b>Todas as sessões serão removidas. "
-            f"Esta ação não pode ser desfeita.</b>\n\n"
-            f"O arquivo do projeto QGIS não será alterado.",
+            self._t("Delete project record"),
+            self._t(
+                "Permanently delete the record for:\n\n<b>{name}</b>\n"
+                "Total time: {total}\nSessions: {sessions}\n\n"
+                "<b>All sessions will be removed. This action cannot be undone.</b>\n\n"
+                "The QGIS project file will not be changed.",
+                name=project_name,
+                total=total_time,
+                sessions=session_count,
+            ),
             _mb_yes() | _mb_cancel(),
             _mb_cancel(),
         )
@@ -915,12 +985,15 @@ class StatsDialog(QDialog):
 
         reply = QMessageBox.question(
             self,
-            "Excluir sessão",
-            f"Excluir esta sessão?\n\n"
-            f"Projeto: <b>{proj_name}</b>\n"
-            f"Início: {start_time}\n"
-            f"Duração: {duration}\n\n"
-            f"O total do projeto será recalculado com as sessões contabilizadas.",
+            self._t("Delete session"),
+            self._t(
+                "Delete this session?\n\nProject: <b>{project}</b>\n"
+                "Started: {started}\nDuration: {duration}\n\n"
+                "The project total will be recalculated from the counted sessions.",
+                project=proj_name,
+                started=start_time,
+                duration=duration,
+            ),
             _mb_yes() | _mb_cancel(),
             _mb_cancel(),
         )
@@ -937,7 +1010,7 @@ class StatsDialog(QDialog):
     def _export_csv(self):
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Exportar CSV",
+            self._t("Export CSV"),
             os.path.expanduser("~/time_tracker.csv"),
             "CSV Files (*.csv)",
         )
@@ -945,14 +1018,18 @@ class StatsDialog(QDialog):
             return
         try:
             self._db.export_csv(path)
-            QMessageBox.information(self, "Exportar CSV", f"Arquivo salvo em:\n{path}")
+            QMessageBox.information(
+                self,
+                self._t("Export CSV"),
+                self._t("File saved to:\n{path}", path=path),
+            )
         except Exception as exc:
-            QMessageBox.critical(self, "Erro de exportação", str(exc))
+            QMessageBox.critical(self, self._t("Export error"), str(exc))
 
     def _export_json(self):
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Exportar JSON",
+            self._t("Export JSON"),
             os.path.expanduser("~/time_tracker.json"),
             "JSON Files (*.json)",
         )
@@ -961,7 +1038,17 @@ class StatsDialog(QDialog):
         try:
             self._db.export_json(path)
             QMessageBox.information(
-                self, "Exportar JSON", f"Arquivo salvo em:\n{path}"
+                self,
+                self._t("Export JSON"),
+                self._t("File saved to:\n{path}", path=path),
             )
         except Exception as exc:
-            QMessageBox.critical(self, "Erro de exportação", str(exc))
+            QMessageBox.critical(self, self._t("Export error"), str(exc))
+
+    def _t(self, text, **values):
+        return tr(text, self._language, **values)
+
+    def _project_display_name(self, name):
+        if name in {"Unsaved project", "Projeto não salvo"}:
+            return self._t("Unsaved project")
+        return name

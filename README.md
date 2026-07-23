@@ -28,6 +28,7 @@ The plugin adds a small toolbar to QGIS so you can start, pause, stop, inspect s
 - Project summaries and detailed sessions in CSV and JSON exports
 - Optional toolbar project name
 - Optional daily goal and toolbar progress bar
+- English and Portuguese interface, with English as the default
 - Accessible textual state for running and paused sessions
 - Keyboard shortcut: `Ctrl+Alt+T` to start/pause/resume
 
@@ -93,6 +94,7 @@ The settings dialog currently supports:
 - show daily progress bar in toolbar
 - confirm-before-reset preference
 - show project name in toolbar
+- interface language (`English` or `Português`), with English selected by default
 
 ![Settings dialog](assets/plugin_settings.png)
 

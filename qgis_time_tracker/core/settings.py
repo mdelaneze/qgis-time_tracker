@@ -23,6 +23,7 @@ _DEFAULTS = {
     "notify_on_session_end": True,
     "daily_goal_hours": 0,  # 0 = disabled; >0 shows progress in toolbar
     "show_daily_progress": False,  # show daily goal progress bar in toolbar
+    "language": "en",
 }
 
 
@@ -142,3 +143,15 @@ class TrackerSettings:
     @show_daily_progress.setter
     def show_daily_progress(self, v: bool):
         _set("show_daily_progress", bool(v))
+
+    @property
+    def language(self) -> str:
+        from .i18n import normalize_language
+
+        return normalize_language(_get("language"))
+
+    @language.setter
+    def language(self, value: str):
+        from .i18n import normalize_language
+
+        _set("language", normalize_language(value))

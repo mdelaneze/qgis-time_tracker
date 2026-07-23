@@ -16,6 +16,7 @@ from enum import Enum
 from qgis.core import QgsProject
 from qgis.PyQt.QtCore import QObject, QTimer, pyqtSignal
 
+from .i18n import tr
 from .persistence import normalize_project_path
 
 
@@ -35,7 +36,7 @@ def _current_project_name() -> str:
     path = QgsProject.instance().absoluteFilePath()
     if path:
         return os.path.splitext(os.path.basename(path))[0]
-    return "Projeto não salvo"
+    return tr("Unsaved project")
 
 
 # ── main class ─────────────────────────────────────────────────────────────────

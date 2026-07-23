@@ -325,6 +325,7 @@ class _TrackerConfiguration:
     daily_goal_hours = 0
     notify_on_session_end = False
     confirm_on_reset = True
+    language = "en"
 
 
 def test_tracker_start_pause_resume_and_stop(qgis_application, monkeypatch):
@@ -432,24 +433,30 @@ def test_new_unsaved_projects_receive_distinct_keys(qgis_application):
     assert tracker.project_key != first_key
 
 
-def test_toolbar_uses_portuguese_labels_and_standard_icons(qgis_application):
+def test_toolbar_defaults_to_english_and_supports_portuguese(qgis_application):
     from qgis_time_tracker.ui.toolbar_widget import TrackerWidget
 
     database = _TrackerDatabase()
     tracker = TimeTracker(database, _TrackerConfiguration())
     tracker._project_key = "/projetos/safra.qgz"
     tracker._project_name = "Safra"
+    english = _TrackerConfiguration()
+    english.language = "en"
 
-    widget = TrackerWidget(tracker, database, _TrackerConfiguration())
+    widget = TrackerWidget(tracker, database, english)
 
-    assert widget._btn_toggle.toolTip().startswith("Iniciar")
-    assert widget._btn_stop.toolTip() == "Encerrar sessão"
+    assert widget._btn_toggle.toolTip().startswith("Start")
+    assert widget._btn_stop.toolTip() == "End session"
     assert not widget._btn_toggle.icon().isNull()
     assert not widget._btn_stop.icon().isNull()
 
     tracker._state = TrackerState.PAUSED
     tracker._pause_reason = "idle"
     widget._apply_state(TrackerState.PAUSED)
+    assert widget._status_lbl.text() == "Pause: inactivity"
+
+    english.language = "pt"
+    widget._refresh_visibility()
     assert widget._status_lbl.text() == "Pausa: inatividade"
     widget.deleteLater()
 
@@ -509,6 +516,45 @@ def test_numeric_settings_are_clamped(monkeypatch):
     assert settings.idle_timeout_minutes == 480
     assert settings.min_session_seconds == 0
     assert settings.daily_goal_hours == 16
+
+
+def test_language_setting_defaults_to_english_and_normalizes_portuguese(monkeypatch):
+    from qgis_time_tracker.core import settings as settings_module
+
+    values = {}
+    writes = []
+    monkeypatch.setattr(settings_module, "_get", values.get)
+    monkeypatch.setattr(
+        settings_module, "_set", lambda key, value: writes.append((key, value))
+    )
+    settings = settings_module.TrackerSettings()
+
+    assert settings.language == "en"
+    settings.language = "pt-BR"
+    assert writes == [("language", "pt")]
+
+
+def test_settings_dialog_exposes_and_saves_language_choice(qgis_application):
+    from qgis_time_tracker.ui.settings_dialog import SettingsDialog
+
+    class Tracker:
+        def apply_idle_setting(self):
+            pass
+
+        def apply_project_name_setting(self):
+            pass
+
+    settings = _TrackerConfiguration()
+    dialog = SettingsDialog(settings, Tracker())
+
+    assert dialog._language_combo.currentData() == "en"
+    dialog._language_combo.setCurrentIndex(
+        dialog._language_combo.findData("pt")
+    )
+    dialog._save()
+
+    assert settings.language == "pt"
+    dialog.deleteLater()
 
 
 class _PluginPersistence:

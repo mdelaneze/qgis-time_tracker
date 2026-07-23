@@ -6,6 +6,7 @@ SettingsDialog – Time Tracker preferences.
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -16,6 +17,8 @@ from qgis.PyQt.QtWidgets import (
     QSpinBox,
     QVBoxLayout,
 )
+
+from ..core.i18n import LANGUAGE_NAMES, SUPPORTED_LANGUAGES, tr
 
 # ── Qt5 / Qt6 enum compat helpers ─────────────────────────────────────────────
 
@@ -57,7 +60,8 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self._cfg = settings
         self._tracker = tracker
-        self.setWindowTitle("Controle de Tempo – Configurações")
+        self._language = self._cfg.language
+        self.setWindowTitle(self._t("Time Tracker – Settings"))
         self.setMinimumWidth(460)
         self._build_ui()
         self._load()
@@ -69,55 +73,60 @@ class SettingsDialog(QDialog):
         root.setSpacing(10)
 
         # ── Auto-Pause ────────────────────────────────────────────────────────
-        grp_pause = QGroupBox("Pausa automática")
+        grp_pause = QGroupBox(self._t("Auto-pause"))
         form = QFormLayout(grp_pause)
 
         self._spin_idle = QSpinBox()
         self._spin_idle.setRange(0, 480)
         self._spin_idle.setSuffix(" min")
-        self._spin_idle.setSpecialValueText("Desativado")
+        self._spin_idle.setSpecialValueText(self._t("Disabled"))
         self._spin_idle.setToolTip(
-            "Pausa após este período sem atividade no QGIS.\n"
-            "Use 0 para desativar."
+            self._t(
+                "Pause after this period without activity in QGIS.\n"
+                "Use 0 to disable."
+            )
         )
-        form.addRow("Tempo de inatividade:", self._spin_idle)
+        form.addRow(self._t("Idle timeout:"), self._spin_idle)
 
         self._chk_focus = QCheckBox(
-            "Pausar quando o QGIS for minimizado ou perder o foco"
+            self._t("Pause when QGIS is minimized or loses focus")
         )
         form.addRow(self._chk_focus)
         root.addWidget(grp_pause)
 
         # ── Auto-Start ────────────────────────────────────────────────────────
-        grp_start = QGroupBox("Início automático")
+        grp_start = QGroupBox(self._t("Automatic start"))
         form2 = QFormLayout(grp_start)
         self._chk_autostart = QCheckBox(
-            "Iniciar a contagem automaticamente ao abrir um projeto"
+            self._t("Start tracking automatically when a project is opened")
         )
         form2.addRow(self._chk_autostart)
         root.addWidget(grp_start)
 
         # ── Sessions ──────────────────────────────────────────────────────────
-        grp_sess = QGroupBox("Sessões")
+        grp_sess = QGroupBox(self._t("Sessions"))
         form3 = QFormLayout(grp_sess)
 
         self._spin_min_session = QSpinBox()
         self._spin_min_session.setRange(0, 300)
         self._spin_min_session.setSuffix(" s")
-        self._spin_min_session.setSpecialValueText("Registrar todas")
+        self._spin_min_session.setSpecialValueText(self._t("Record all"))
         self._spin_min_session.setToolTip(
-            "Sessões menores que este valor são descartadas ao pausar ou encerrar.\n"
-            "Útil para ignorar acionamentos acidentais.\n"
-            "Use 0 para registrar todas."
+            self._t(
+                "Sessions shorter than this value are discarded when paused or stopped.\n"
+                "This helps ignore accidental starts.\nUse 0 to record all."
+            )
         )
-        form3.addRow("Duração mínima:", self._spin_min_session)
+        form3.addRow(self._t("Minimum duration:"), self._spin_min_session)
 
         slider_row = QHBoxLayout()
         self._sld_min_session = QSlider(_horizontal())
         self._sld_min_session.setRange(0, 300)
         self._sld_min_session.setTickInterval(60)
         self._sld_min_session.setTickPosition(_ticks_below())
-        self._sld_min_session.setToolTip("Arraste para ajustar a duração mínima.")
+        self._sld_min_session.setToolTip(
+            self._t("Drag to adjust the minimum duration.")
+        )
         self._spin_min_session.valueChanged.connect(self._sld_min_session.setValue)
         self._sld_min_session.valueChanged.connect(self._spin_min_session.setValue)
         slider_row.addWidget(QLabel("0 s"))
@@ -126,56 +135,66 @@ class SettingsDialog(QDialog):
         form3.addRow(slider_row)
 
         self._chk_notify_session = QCheckBox(
-            "Exibir notificação ao finalizar uma sessão"
+            self._t("Show a notification when a session ends")
         )
         self._chk_notify_session.setToolTip(
-            "Exibe na barra de mensagens do QGIS a duração\n"
-            "da sessão quando ela é pausada ou encerrada."
+            self._t(
+                "Shows the session duration in the QGIS message bar when it is "
+                "paused or stopped."
+            )
         )
         form3.addRow(self._chk_notify_session)
         root.addWidget(grp_sess)
 
         # ── Daily Goal ────────────────────────────────────────────────────────
-        grp_goal = QGroupBox("Meta diária")
+        grp_goal = QGroupBox(self._t("Daily goal"))
         form4 = QFormLayout(grp_goal)
 
         self._spin_goal = QSpinBox()
         self._spin_goal.setRange(0, 16)
         self._spin_goal.setSuffix(" h")
-        self._spin_goal.setSpecialValueText("Sem meta")
+        self._spin_goal.setSpecialValueText(self._t("No goal"))
         self._spin_goal.setToolTip(
-            "Defina uma meta diária de trabalho.\n"
-            "A barra integrada mostrará o progresso do dia.\n"
-            "Use 0 para desativar."
+            self._t(
+                "Set a daily work goal.\n"
+                "The integrated bar will show today's progress.\nUse 0 to disable."
+            )
         )
-        form4.addRow("Meta diária:", self._spin_goal)
+        form4.addRow(self._t("Daily goal") + ":", self._spin_goal)
 
         self._chk_show_progress = QCheckBox(
-            "Exibir o progresso diário na barra de ferramentas"
+            self._t("Show daily progress in the toolbar")
         )
         self._chk_show_progress.setToolTip(
-            "Exibe abaixo do contador quanto da meta de hoje foi concluído."
+            self._t(
+                "Shows below the timer how much of today's goal has been completed."
+            )
         )
         form4.addRow(self._chk_show_progress)
         root.addWidget(grp_goal)
 
         # ── Interface ─────────────────────────────────────────────────────────
-        grp_ui = QGroupBox("Interface")
+        grp_ui = QGroupBox(self._t("Interface"))
         form5 = QFormLayout(grp_ui)
 
+        self._language_combo = QComboBox()
+        for code in SUPPORTED_LANGUAGES:
+            self._language_combo.addItem(LANGUAGE_NAMES[code], code)
+        form5.addRow(self._t("Language") + ":", self._language_combo)
+
         self._chk_confirm_reset = QCheckBox(
-            "Pedir confirmação antes de zerar o tempo de um projeto"
+            self._t("Ask for confirmation before resetting a project's time")
         )
         self._chk_confirm_reset.setToolTip(
-            "Quando marcado, solicita confirmação antes de zerar o contador."
+            self._t("When enabled, asks for confirmation before resetting the timer.")
         )
         form5.addRow(self._chk_confirm_reset)
 
         self._chk_project_name = QCheckBox(
-            "Exibir o nome do projeto na barra de ferramentas"
+            self._t("Show the project name in the toolbar")
         )
         self._chk_project_name.setToolTip(
-            "Exibe o nome do projeto ativo ao lado do contador."
+            self._t("Shows the active project name next to the timer.")
         )
         form5.addRow(self._chk_project_name)
         root.addWidget(grp_ui)
@@ -197,6 +216,8 @@ class SettingsDialog(QDialog):
         self._chk_project_name.setChecked(self._cfg.show_project_name)
         self._spin_goal.setValue(self._cfg.daily_goal_hours)
         self._chk_show_progress.setChecked(self._cfg.show_daily_progress)
+        index = self._language_combo.findData(self._cfg.language)
+        self._language_combo.setCurrentIndex(max(0, index))
 
     def _save(self):
         self._cfg.idle_timeout_minutes = self._spin_idle.value()
@@ -208,6 +229,7 @@ class SettingsDialog(QDialog):
         self._cfg.show_project_name = self._chk_project_name.isChecked()
         self._cfg.daily_goal_hours = self._spin_goal.value()
         self._cfg.show_daily_progress = self._chk_show_progress.isChecked()
+        self._cfg.language = self._language_combo.currentData()
 
         self._tracker.apply_idle_setting()
 
@@ -215,3 +237,6 @@ class SettingsDialog(QDialog):
             self._tracker.apply_project_name_setting()
 
         self.accept()
+
+    def _t(self, text, **values):
+        return tr(text, self._language, **values)

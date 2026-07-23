@@ -555,7 +555,7 @@ class PersistenceManager:
         project_path = normalize_project_path(project_path)
         if not project_name:
             if project_path.startswith("__unsaved__"):
-                project_name = "Projeto não salvo"
+                project_name = "Unsaved project"
             else:
                 project_name = (
                     os.path.splitext(os.path.basename(project_path))[0] or project_path

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Adicionada seleção entre inglês e português nas configurações, com inglês
+  como idioma padrão.
+
 ## 0.4.0
 
 - Durações mínimas passam a ser respeitadas também na recuperação após falhas.
