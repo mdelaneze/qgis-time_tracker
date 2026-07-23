@@ -6,7 +6,7 @@ Qt 6 migration notes
 * QEvent.Type enum members are accessed as QEvent.Type.MouseMove etc. in
   PyQt6, but PyQt5 exposes them as QEvent.MouseMove.  To support BOTH
   Qt5 (QGIS 3.x) and Qt6 (QGIS 4.x) we resolve enum values at import time
-  via _qt_event() so the same code runs on either stack.
+  via _ev() so the same code runs on either stack.
 * All other APIs used here (QObject, QApplication, QgsProject) are
   identical between Qt5 and Qt6.
 
@@ -20,20 +20,20 @@ unload()   → stop tracker (flush to DB), remove filters, disconnect signals,
 Project signals
 ---------------
 readProject  – fires after a .qgs/.qgz has been read.
-writeProject – fires after Save/Save-As; used to migrate __unsaved__ time.
+writeProject – fires after Save/Save-As; migrates apenas o projeto não salvo.
 cleared      – fires when the user opens a new empty project.
 """
 
-import os
-
-from qgis.core import QgsProject
+from qgis.core import Qgis, QgsMessageLog, QgsProject
 from qgis.PyQt.QtCore import QEvent, QObject
 from qgis.PyQt.QtWidgets import QApplication
 
 from .core.persistence import PersistenceManager
 from .core.settings import TrackerSettings
-from .core.tracker import TimeTracker, TrackerState, _current_project_name
+from .core.tracker import TimeTracker, TrackerState
 from .ui.toolbar_widget import TrackerWidget
+
+_LOG_TAG = "QGIS Time Tracker"
 
 # ── Qt5 / Qt6 event-type compat ───────────────────────────────────────────────
 
@@ -82,12 +82,12 @@ class _ActivityFilter(QObject):
 
 class _WindowFilter(QObject):
     """
-    Installed on iface.mainWindow().
-    Triggers auto-pause when QGIS is minimised or loses focus
+    Installed on QApplication.
+    Triggers auto-pause only when the QGIS application loses focus
     (only if the user has enabled pause_on_focus_loss in settings).
     """
 
-    _DEACTIVATE = _ev("WindowDeactivate")
+    _DEACTIVATE = _ev("ApplicationDeactivate")
 
     def __init__(self, tracker, settings, parent=None):
         super().__init__(parent)
@@ -98,7 +98,7 @@ class _WindowFilter(QObject):
         if self._cfg.pause_on_focus_loss:
             if event.type() in self._DEACTIVATE:
                 if self._t.state == TrackerState.RUNNING:
-                    self._t.pause()
+                    self._t.pause(reason="focus")
         return False
 
 
@@ -122,20 +122,24 @@ class TimeTrackerPlugin:
     def initGui(self):
         self._cfg = TrackerSettings()
         self._db = PersistenceManager()  # crash-recovery runs here
+        self._report_recovery_errors()
         self._tracker = TimeTracker(self._db, self._cfg)
 
         # toolbar
-        self._toolbar = self._iface.addToolBar("Time Tracker")
+        self._toolbar = self._iface.addToolBar("Controle de Tempo")
         self._toolbar.setObjectName("TimeTrackerToolBar")
         self._widget = TrackerWidget(self._tracker, self._db, self._cfg)
         self._toolbar.addWidget(self._widget)
 
         # event filters
+        app = QApplication.instance()
+        if app is None:
+            raise RuntimeError("A aplicação Qt do QGIS não está disponível.")
         self._act_filter = _ActivityFilter(self._tracker)
-        QApplication.instance().installEventFilter(self._act_filter)
+        app.installEventFilter(self._act_filter)
 
         self._win_filter = _WindowFilter(self._tracker, self._cfg)
-        self._iface.mainWindow().installEventFilter(self._win_filter)
+        app.installEventFilter(self._win_filter)
 
         # project signals
         proj = QgsProject.instance()
@@ -146,16 +150,43 @@ class TimeTrackerPlugin:
         # load whatever project is already open (if plugin is activated mid-session)
         self._tracker.load_project()
 
+    def _report_recovery_errors(self):
+        errors = self._db.consume_recovery_errors()
+        if not errors:
+            return
+        latest = errors[-1]
+        message = (
+            f"{len(errors)} sessão(ões) não puderam ser recuperadas e foram "
+            "preservadas para diagnóstico. Consulte o painel de mensagens do QGIS."
+        )
+        QgsMessageLog.logMessage(
+            f"{message} Último projeto: {latest['project_path']}. "
+            f"Erro: {latest['error_message']}",
+            _LOG_TAG,
+            Qgis.Warning,
+        )
+        try:
+            self._iface.messageBar().pushWarning("Controle de Tempo", message)
+        except (AttributeError, RuntimeError):
+            QgsMessageLog.logMessage(
+                "A barra de mensagens não estava disponível para exibir o aviso.",
+                _LOG_TAG,
+                Qgis.Info,
+            )
+
     def unload(self):
         if self._tracker:
             self._tracker.stop()
 
+        app = QApplication.instance()
         if self._act_filter:
-            QApplication.instance().removeEventFilter(self._act_filter)
+            if app is not None:
+                app.removeEventFilter(self._act_filter)
             self._act_filter = None
 
         if self._win_filter:
-            self._iface.mainWindow().removeEventFilter(self._win_filter)
+            if app is not None:
+                app.removeEventFilter(self._win_filter)
             self._win_filter = None
 
         proj = QgsProject.instance()
@@ -166,16 +197,32 @@ class TimeTrackerPlugin:
         ]:
             try:
                 sig.disconnect(slot)
-            except Exception:
-                pass
+            except (TypeError, RuntimeError):
+                # O sinal pode já ter sido destruído durante o encerramento do QGIS.
+                continue
 
         if self._toolbar:
             self._iface.mainWindow().removeToolBar(self._toolbar)
+            if self._widget is not None:
+                self._widget.deleteLater()
+                self._widget = None
+            self._toolbar.deleteLater()
             self._toolbar = None
 
         if self._db:
             self._db.close()
             self._db = None
+        self._tracker = None
+
+    def open_tool(self):
+        """Exibe e destaca a barra do Controle de Tempo."""
+        if self._toolbar is None:
+            raise RuntimeError("A barra do Controle de Tempo não foi inicializada.")
+        self._toolbar.show()
+        self._toolbar.raise_()
+        if self._widget is not None:
+            self._widget.show()
+            self._widget.setFocus()
 
     # ── project signal handlers ───────────────────────────────────────────────
 
@@ -191,28 +238,9 @@ class TimeTrackerPlugin:
         new_key = QgsProject.instance().absoluteFilePath()
         if not new_key:
             return
-        old_key = self._tracker.project_key
-        if old_key and old_key != new_key:
-            was_running = self._tracker.state == TrackerState.RUNNING
-            if was_running:
-                self._tracker.pause()
-
-            new_name = _current_project_name()
-            self._db.migrate_project_path(old_key, new_key, new_name)
-
-            self._tracker._project_key = new_key
-            self._tracker._project_name = new_name
-            self._tracker._base_seconds = self._db.get_project_seconds(new_key)
-            self._tracker.time_updated.emit(self._tracker._base_seconds)
-
-            if was_running:
-                self._tracker.start()
+        self._tracker.on_project_saved(new_key)
 
     def _on_cleared(self):
         if self._tracker.state != TrackerState.STOPPED:
             self._tracker.stop()
-        self._tracker._project_key = None
-        self._tracker._project_name = None
-        self._tracker._base_seconds = 0
-        self._tracker.time_updated.emit(0)
-        self._tracker.state_changed.emit(TrackerState.STOPPED.value)
+        self._tracker.load_project(force_new_unsaved=True)

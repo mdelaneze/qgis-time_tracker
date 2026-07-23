@@ -71,11 +71,11 @@ class TrackerSettings:
 
     @property
     def idle_timeout_minutes(self) -> int:
-        return _get("idle_timeout_minutes")
+        return max(0, min(480, _get("idle_timeout_minutes")))
 
     @idle_timeout_minutes.setter
     def idle_timeout_minutes(self, v: int):
-        _set("idle_timeout_minutes", int(v))
+        _set("idle_timeout_minutes", max(0, min(480, int(v))))
 
     @property
     def pause_on_focus_loss(self) -> bool:
@@ -111,11 +111,11 @@ class TrackerSettings:
 
     @property
     def min_session_seconds(self) -> int:
-        return _get("min_session_seconds")
+        return max(0, min(300, _get("min_session_seconds")))
 
     @min_session_seconds.setter
     def min_session_seconds(self, v: int):
-        _set("min_session_seconds", int(v))
+        _set("min_session_seconds", max(0, min(300, int(v))))
 
     @property
     def notify_on_session_end(self) -> bool:
@@ -128,11 +128,11 @@ class TrackerSettings:
     @property
     def daily_goal_hours(self) -> int:
         """Daily work-hour goal (0 = disabled)."""
-        return _get("daily_goal_hours")
+        return max(0, min(16, _get("daily_goal_hours")))
 
     @daily_goal_hours.setter
     def daily_goal_hours(self, v: int):
-        _set("daily_goal_hours", int(v))
+        _set("daily_goal_hours", max(0, min(16, int(v))))
 
     @property
     def show_daily_progress(self) -> bool:
